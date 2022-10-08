@@ -6,6 +6,7 @@
 module Ide.Plugin.Cabal.LicenseSuggest
 ( licenseErrorSuggestion
 , licenseErrorAction
+, licenseNames
   -- * Re-exports
 , T.Text
 , Diagnostic(..)
