@@ -118,7 +118,7 @@ completionHelperTests =
   where
     getFilePathCursorPrefix :: T.Text -> UInt -> UInt -> T.Text
     getFilePathCursorPrefix lineString linePos charPos =
-        completionPrefix . getCabalCompletionContext "" $
+        completionPrefix . getCabalPrefixInfo "" $
             VFS.PosPrefixInfo
                 { VFS.fullLine = lineString
                 , VFS.prefixModule = ""
@@ -131,39 +131,39 @@ filePathCompletionContextTests =
     testGroup
         "File Path Completion Context Tests"
         [ testCase "empty file - start" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "" 0 0)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "" 0 0)
             completionSuffix complContext @?= Just ""
             completionPrefix complContext @?= ""
         , testCase "only whitespaces" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "   " 0 3)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "   " 0 3)
             completionSuffix complContext @?= Just ""
             completionPrefix complContext @?= ""
         , testCase "simple filepath" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "   src/" 0 7)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "   src/" 0 7)
             completionSuffix complContext @?= Just ""
             completionPrefix complContext @?= "src/"
         , testCase "simple filepath - starting apostrophe" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "   \"src/" 0 8)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "   \"src/" 0 8)
             completionSuffix complContext @?= Just "\""
             completionPrefix complContext @?= "src/"
         , testCase "simple filepath - starting apostrophe, already closed" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "   \"src/\"" 0 8)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "   \"src/\"" 0 8)
             completionSuffix complContext @?= Just ""
             completionPrefix complContext @?= "src/"
         , testCase "second filepath - starting apostrophe" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "fp.txt \"src/" 0 12)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "fp.txt \"src/" 0 12)
             completionSuffix complContext @?= Just "\""
             completionPrefix complContext @?= "src/"
         , testCase "middle filepath - starting apostrophe" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "fp.txt \"src/ fp2.txt" 0 12)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "fp.txt \"src/ fp2.txt" 0 12)
             completionSuffix complContext @?= Just "\""
             completionPrefix complContext @?= "src/"
         , testCase "middle filepath - starting apostrophe, already closed" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "fp.t xt \"src\" fp2.txt" 0 12)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "fp.t xt \"src\" fp2.txt" 0 12)
             completionSuffix complContext @?= Just ""
             completionPrefix complContext @?= "src"
         , testCase "middle filepath - starting apostrophe, already closed" $ do
-            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "\"fp.txt\" \"src fp2.txt" 0 13)
+            let complContext = getCabalPrefixInfo "" (simplePosPrefixInfo "\"fp.txt\" \"src fp2.txt" 0 13)
             completionSuffix complContext @?= Just "\""
             completionPrefix complContext @?= "src"
         ]
@@ -193,7 +193,7 @@ pathCompleterTests =
                         PathCompletionInfo
                             { partialFileName = ""
                             , partialFileDir = ""
-                            , cabalFileDir = testDir
+                            , workingDir = testDir
                             }
                 sort compls @?= [".hidden", "dir1/", "dir2/", "textfile.txt"]
             , testCase "In directory" $ do
@@ -203,20 +203,20 @@ pathCompleterTests =
                         PathCompletionInfo
                             { partialFileName = ""
                             , partialFileDir = "dir1/"
-                            , cabalFileDir = testDir
+                            , workingDir = testDir
                             }
                 sort compls @?= ["f1.txt", "f2.hs"]
             ]
         ]
   where
-    simpleCabalCompletionContext :: T.Text -> FilePath -> CabalCompletionContext
-    simpleCabalCompletionContext prefix fp =
-        CabalCompletionContext
+    simpleCabalPrefixInfo :: T.Text -> FilePath -> CabalPrefixInfo
+    simpleCabalPrefixInfo prefix fp =
+        CabalPrefixInfo
             { completionPrefix = prefix
             , completionSuffix = Nothing
             , completionCursorPosition = Position 0 0
             , completionRange = Range (Position 0 0) (Position 0 0)
-            , completionCabalFileDir = fp </> "test.cabal"
+            , completionWorkingDir = fp </> "test.cabal"
             }
     getTestDir :: IO FilePath
     getTestDir = do
@@ -228,30 +228,30 @@ pathCompleterTests =
             "Completion Info to Completion Context Tests"
             [ testCase "Current Directory" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalCompletionContext "" testDir
+                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "" testDir
                 partialFileDir complInfo @?= "./"
             , testCase "Current Directory - partly written next" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalCompletionContext "di" testDir
+                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "di" testDir
                 partialFileDir complInfo @?= "./"
                 partialFileName complInfo @?= "di"
             , testCase "Current Directory - alternative writing" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalCompletionContext "./" testDir
+                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "./" testDir
                 partialFileDir complInfo @?= "./"
             , testCase "Subdirectory" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalCompletionContext "dir1/" testDir
+                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "dir1/" testDir
                 partialFileDir complInfo @?= "dir1/"
                 partialFileName complInfo @?= ""
             , testCase "Subdirectory - partly written next" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalCompletionContext "dir1/d" testDir
+                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "dir1/d" testDir
                 partialFileDir complInfo @?= "dir1/"
                 partialFileName complInfo @?= "d"
             , testCase "Subdirectory - partly written next" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalCompletionContext "dir1/dir2/d" testDir
+                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "dir1/dir2/d" testDir
                 partialFileDir complInfo @?= "dir1/dir2/"
                 partialFileName complInfo @?= "d"
             ]
@@ -297,7 +297,7 @@ pathCompleterTests =
             ]
         where
             completeDirectory :: T.Text -> TestName -> IO [CabalCompletionItem]
-            completeDirectory written dirName = directoryCompleter mempty $ simpleCabalCompletionContext written dirName
+            completeDirectory written dirName = directoryCompleter mempty $ simpleCabalPrefixInfo written dirName
     fileCompleterTests :: TestTree
     fileCompleterTests =
         testGroup
@@ -345,7 +345,7 @@ pathCompleterTests =
             ]
         where
             completeFilePath :: T.Text -> TestName -> IO [CabalCompletionItem]
-            completeFilePath written dirName = filePathCompleter mempty $ simpleCabalCompletionContext written dirName
+            completeFilePath written dirName = filePathCompleter mempty $ simpleCabalPrefixInfo written dirName
 contextTests :: TestTree
 contextTests =
     testGroup
@@ -443,20 +443,20 @@ contextTests =
     where
         callGetContext :: Position -> [T.Text] -> IO Context
         callGetContext pos ls = do
-            runMaybeT (getContext mempty (simpleCabalCompletionContext pos) (Rope.fromText $ T.unlines ls))
+            runMaybeT (getContext mempty (simpleCabalPrefixInfo pos) (Rope.fromText $ T.unlines ls))
                 >>= \case
                 Nothing -> assertFailure "Context must be found"
                 Just ctx -> pure ctx
 
 
-        simpleCabalCompletionContext :: Position -> CabalCompletionContext
-        simpleCabalCompletionContext pos =
-            CabalCompletionContext
+        simpleCabalPrefixInfo :: Position -> CabalPrefixInfo
+        simpleCabalPrefixInfo pos =
+            CabalPrefixInfo
                 { completionPrefix = ""
                 , completionSuffix = Nothing
                 , completionCursorPosition = pos
                 , completionRange = Range pos (Position 0 0)
-                , completionCabalFileDir = ""
+                , completionWorkingDir = ""
                 }
 -- ------------------------------------------------------------------------
 -- Integration Tests

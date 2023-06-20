@@ -34,20 +34,24 @@ import qualified Text.Fuzzy.Parallel             as Fuzzy
 data Log
   = LogFilePathCompleterIOError FilePath IOError
   | LogFileSplitError Position
+  | LogUnknownKeyWordInContextError KeyWordName
+  | LogUnknownStanzaNameInContextError StanzaName
   deriving (Show)
 
 instance Pretty Log where
   pretty = \case
     LogFilePathCompleterIOError fp ioErr ->
       "Filepath:" <+> viaShow fp <+> viaShow ioErr
-    LogFileSplitError pos ->  "Position: " <+> viaShow pos
-
-
+    LogFileSplitError pos ->  "Position:" <+> viaShow pos
+    LogUnknownKeyWordInContextError kw ->
+      "Lookup failed for:" <+> viaShow kw
+    LogUnknownStanzaNameInContextError sn ->
+      "Lookup failed for:" <+> viaShow sn
 
 {- | Takes information needed to build possible completion items
 and returns the list of possible completion items
 -}
-type Completer = Recorder (WithPriority Log) -> CabalCompletionContext -> IO [CabalCompletionItem]
+type Completer = Recorder (WithPriority Log) -> CabalPrefixInfo -> IO [CabalCompletionItem]
 
 -- | Contains information needed for a completion action
 data CabalCompletionItem = CabalCompletionItem
@@ -81,11 +85,11 @@ data StanzaContext
 -}
 data KeyWordContext
   = -- | Key word context, where a keyword
-    -- occurs right before the current position,
-    -- with no value associated to it
+    -- occurs right before the current word
+    -- to be completed
     KeyWord KeyWordName
   | -- | Keyword context where no keyword occurs
-    -- right before the current position
+    -- right before the current word to be completed
     None
   deriving (Eq, Show, Read)
 
@@ -113,7 +117,7 @@ type StanzaName = T.Text
   necessary to complete filepaths and other values
   in a cabal file.
 -}
-data CabalCompletionContext = CabalCompletionContext
+data CabalPrefixInfo = CabalPrefixInfo
   { completionPrefix         :: T.Text
   -- ^ text prefix to complete
   , completionSuffix         :: Maybe T.Text
@@ -123,7 +127,7 @@ data CabalCompletionContext = CabalCompletionContext
   -- ^ the current position of the cursor in the file
   , completionRange          :: Range
   -- ^ range where completion is to be inserted
-  , completionCabalFileDir   :: FilePath
+  , completionWorkingDir     :: FilePath
   -- ^ filepath of the handled cabal file
   }
   deriving (Eq, Show)
@@ -138,43 +142,46 @@ data CabalCompletionContext = CabalCompletionContext
 contextToCompleter :: Context -> Completer
 -- if we are in the top level of the cabal file and not in a keyword context,
 -- we can write any top level keywords or a stanza declaration
-contextToCompleter (TopLevel, None) =
+contextToCompleter  (TopLevel, None) =
   constantCompleter $
     Map.keys (cabalVersionKeyword <> cabalKeywords) ++ Map.keys stanzaKeywordMap
 -- if we are in a keyword context in the top level,
 -- we look up that keyword in the top level context and can complete its possible values
 contextToCompleter (TopLevel, KeyWord kw) =
   case Map.lookup kw (cabalVersionKeyword <> cabalKeywords) of
-    Nothing -> noopCompleter
+    Nothing -> \recorder b -> do
+      logWith recorder Warning $ LogUnknownKeyWordInContextError kw
+      noopCompleter recorder b
     Just l  -> l
 -- if we are in a stanza and not in a keyword context,
 -- we can write any of the stanza's keywords or a stanza declaration
-contextToCompleter (Stanza s, None) =
+contextToCompleter  (Stanza s, None) =
   case Map.lookup s stanzaKeywordMap of
-    Nothing -> noopCompleter
+    Nothing -> \recorder b -> do
+      logWith recorder Warning $ LogUnknownStanzaNameInContextError s
+      noopCompleter recorder b
     Just l  -> constantCompleter $ Map.keys l ++ Map.keys stanzaKeywordMap
 -- if we are in a stanza's keyword's context we can complete possible values of that keyword
-contextToCompleter (Stanza s, KeyWord kw) =
+contextToCompleter  (Stanza s, KeyWord kw) =
   case Map.lookup s stanzaKeywordMap of
-    Nothing -> noopCompleter
+    Nothing -> \recorder b -> do
+      logWith recorder Warning $ LogUnknownStanzaNameInContextError s
+      noopCompleter recorder b
     Just m -> case Map.lookup kw m of
-      Nothing -> noopCompleter
+      Nothing -> \recorder b -> do
+        logWith recorder Warning $ LogUnknownKeyWordInContextError kw
+        noopCompleter recorder b
       Just l  -> l
 
-{- | Takes information about the current cursor position,
-  the handled cabal file and a set of possible keywords
-  and creates completion suggestions that fit the current input
-  from the given list
--}
-mkCompletionItems :: [CabalCompletionItem] -> [LSP.CompletionItem]
-mkCompletionItems l = map buildCompletion l
 
-{- | Takes a position and a list of lines (representing a file)
-  and returns the context of the current position
-  can return Nothing if an error occurs
+
+{- | Takes prefix info about the previously written text
+  and a rope (representing a file), returns the corresponding context.
+
+  Can return Nothing if an error occurs.
   TODO: first line can only have cabal-version: keyword
 -}
-getContext :: MonadIO m => Recorder (WithPriority Log) -> CabalCompletionContext -> Rope -> MaybeT m Context
+getContext :: MonadIO m => Recorder (WithPriority Log) -> CabalPrefixInfo -> Rope -> MaybeT m Context
 getContext recorder ctx ls =
   case prevLinesM of
     Just prevLines -> do
@@ -206,11 +213,12 @@ getContext recorder ctx ls =
 -- Helper Functions
 -- ----------------------------------------------------------------
 
-{- | Takes a position, a list of lines (representing a file)
-  and a map of keywords and returns a keyword context if the
-  previously written keyword matches one in the map
+{- | Takes prefix info about the previously written text,
+  a list of lines (representing a file) and a map of
+  keywords and returns a keyword context if the
+  previously written keyword matches one in the map.
 -}
-getKeyWordContext :: CabalCompletionContext -> [T.Text] -> Map KeyWordName a -> Maybe KeyWordContext
+getKeyWordContext :: CabalPrefixInfo -> [T.Text] -> Map KeyWordName a -> Maybe KeyWordContext
 getKeyWordContext ctx ls keywords = do
   case lastNonEmptyLineM of
     Nothing -> Just None
@@ -251,21 +259,21 @@ currentLevel (cur : xs)
   stanza = List.find (`T.isPrefixOf` cur) (Map.keys stanzaKeywordMap)
 
 {- | Returns a CabalCompletionItem with the given starting position
-  and text to be inserted,
-  where the displayed text is the same as the inserted text.
+  and text to be inserted, where the displayed text is the same as the
+  inserted text.
 -}
 makeSimpleCabalCompletionItem :: Range -> T.Text -> CabalCompletionItem
 makeSimpleCabalCompletionItem r txt = CabalCompletionItem txt Nothing r
 
 {- | Returns a CabalCompletionItem with the given starting position,
-  text to be inserted and text to be displayed in the completion suggestion
+  text to be inserted and text to be displayed in the completion suggestion.
 -}
-makeCabalCompletionItem :: Range -> T.Text -> T.Text -> CabalCompletionItem
-makeCabalCompletionItem r insertTxt displayTxt =
+mkCabalCompletionItem :: Range -> T.Text -> T.Text -> CabalCompletionItem
+mkCabalCompletionItem r insertTxt displayTxt =
   CabalCompletionItem insertTxt (Just displayTxt) r
 
 {- | Get all lines before the given cursor position in the given file
-  and reverse their order to traverse backwards starting from the current position
+  and reverse their order to traverse backwards starting from the given position.
 -}
 splitAtPosition :: Position -> Rope -> Maybe [T.Text]
 splitAtPosition pos ls = do
@@ -280,7 +288,7 @@ splitAtPosition pos ls = do
       }
 
 -- | Takes a line of text and removes the last partially
--- written text to be completed
+-- written word to be completed
 stripPartiallyWritten :: T.Text -> T.Text
 stripPartiallyWritten = T.dropWhileEnd (\y -> (y /= ' ') && (y /= ':'))
 
@@ -297,6 +305,7 @@ stripPartiallyWritten = T.dropWhileEnd (\y -> (y /= ' ') && (y /= ':'))
   be used for file path completions to be written to the cabal file.
 -}
 
+
 {- | Takes information about the current file's file path,
   the current cursor position in the file
   and its contents; and builds a CabalCompletionItem
@@ -304,14 +313,14 @@ stripPartiallyWritten = T.dropWhileEnd (\y -> (y /= ' ') && (y /= ':'))
   checks whether a suffix needs to be completed,
   and calculates the range in the document in which to complete.
 -}
-getCabalCompletionContext :: FilePath -> VFS.PosPrefixInfo -> CabalCompletionContext
-getCabalCompletionContext dir prefixInfo =
-  CabalCompletionContext
+getCabalPrefixInfo :: FilePath -> VFS.PosPrefixInfo -> CabalPrefixInfo
+getCabalPrefixInfo dir prefixInfo =
+  CabalPrefixInfo
     { completionPrefix = filepathPrefix
     , completionSuffix = Just suffix
     , completionCursorPosition = VFS.cursorPos prefixInfo
     , completionRange = Range completionStart completionEnd
-    , completionCabalFileDir = dir
+    , completionWorkingDir = dir
     }
  where
   completionEnd = VFS.cursorPos prefixInfo
@@ -334,8 +343,8 @@ getCabalCompletionContext dir prefixInfo =
   -- otherwise we parse until a space occurs
   stopConditionChars = apostropheOrSpaceSeparator : [',', ':']
 
-buildCompletion :: CabalCompletionItem -> LSP.CompletionItem
-buildCompletion completionItem =
+mkCompletionItem :: CabalCompletionItem -> LSP.CompletionItem
+mkCompletionItem completionItem =
   LSP.CompletionItem
     { Compls._label = toDisplay
     , Compls._labelDetails = Nothing
@@ -395,7 +404,7 @@ filePathCompleter recorder ctx = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         fullFilePath <- makeFullFilePath suffix compl complInfo
-        pure $ makeCabalCompletionItem (completionRange ctx) fullFilePath fullFilePath
+        pure $ mkCabalCompletionItem (completionRange ctx) fullFilePath fullFilePath
     )
  where
   --   Takes a suffix, a completed path and a pathCompletionInfo and
@@ -422,7 +431,7 @@ directoryCompleter recorder ctx = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         fullDirPath <- makeFullDirPath compl complInfo
-        pure $ makeCabalCompletionItem (completionRange ctx) fullDirPath fullDirPath
+        pure $ mkCabalCompletionItem (completionRange ctx) fullDirPath fullDirPath
     )
  where
   --   Takes a directory and PathCompletionInfo and
@@ -460,17 +469,17 @@ listDirectoryCompletions recorder complInfo = do
   filepaths <- listFileCompletions recorder complInfo
   filterM (doesDirectoryExist . mkDirFromCWD complInfo) filepaths
 
-pathCompletionInfoFromCompletionContext :: CabalCompletionContext -> PathCompletionInfo
+pathCompletionInfoFromCompletionContext :: CabalPrefixInfo -> PathCompletionInfo
 pathCompletionInfoFromCompletionContext ctx =
   PathCompletionInfo
     { partialFileName = dirNamePrefix
     , partialFileDir = Posix.addTrailingPathSeparator $ Posix.takeDirectory prefix
-    , cabalFileDir = dir
+    , workingDir = dir
     }
  where
   prefix = T.unpack $ completionPrefix ctx
   dirNamePrefix = T.pack $ Posix.takeFileName prefix
-  dir = Posix.takeDirectory $ completionCabalFileDir ctx
+  dir = Posix.takeDirectory $ completionWorkingDir ctx
 
 {- | Returns the directory, the currently handled cabal file is in.
 
@@ -480,9 +489,11 @@ pathCompletionInfoFromCompletionContext ctx =
 mkCompletionDirectory :: PathCompletionInfo -> FilePath
 mkCompletionDirectory complInfo =
   FP.addTrailingPathSeparator $
-    cabalFileDir complInfo FP.</> (FP.normalise $ partialFileDir complInfo)
+    workingDir complInfo FP.</> (FP.normalise $ partialFileDir complInfo)
 
-{- | Returns the complete filepath for the given filepath.
+{- | Returns the complete filepath for the given filepath,
+  by combining the current working directory of the cabal file
+  with the given partly written file path.
 
   Since this is used for completions we use posix separators here.
   See Note [Using correct file path separators].
@@ -512,7 +523,7 @@ data PathCompletionInfo = PathCompletionInfo
   -- ^ partly written start of next part of path
   , partialFileDir  :: FilePath
   -- ^ written part of path
-  , cabalFileDir    :: FilePath
+  , workingDir      :: FilePath
   -- ^ current working directory of the handled file
   }
   deriving (Eq, Show, Read)

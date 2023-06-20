@@ -295,9 +295,9 @@ completion recorder _ide _ complParams = do
         logWith recorder Debug $ LogCompletionContext ctx pos
         let completer = Completions.contextToCompleter ctx
         completions <- completer completerRecorder completionContext
-        pure $ Completions.mkCompletionItems completions
+        pure $ map Completions.mkCompletionItem completions
    where
     completerRecorder = cmapWithPrio LogCompletions recorder
     pos = VFS.cursorPos prefix
     context = Completions.getContext completerRecorder completionContext (cnts ^. VFS.file_text)
-    completionContext = Completions.getCabalCompletionContext fp prefix
+    completionContext = Completions.getCabalPrefixInfo fp prefix
