@@ -61,6 +61,7 @@ library
     , stm
     , text
     , text-rope
+    , transformers
     , unordered-containers  >=0.2.10.0
     , containers
   hs-source-dirs:   src
@@ -85,4 +86,6 @@ test-suite tests
     , lsp-types
     , tasty-hunit
     , text
+    , text-rope
+    , transformers
     , row-types

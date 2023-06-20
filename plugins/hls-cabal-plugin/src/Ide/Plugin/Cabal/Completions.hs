@@ -7,12 +7,15 @@ module Ide.Plugin.Cabal.Completions where
 import           Control.Exception               (try)
 import           Control.Exception.Extra         (evaluate)
 import           Control.Monad                   (filterM, forM)
+import           Control.Monad.IO.Class          (MonadIO)
+import           Control.Monad.Trans.Maybe
 import qualified Data.List                       as List
-import qualified Data.List.Extra                 as Extra
 import           Data.Map                        (Map)
 import qualified Data.Map                        as Map
 import           Data.Maybe                      (fromMaybe)
 import qualified Data.Text                       as T
+import           Data.Text.Utf16.Rope            (Rope)
+import qualified Data.Text.Utf16.Rope            as Rope
 import           Development.IDE                 as D
 import           Distribution.CabalSpecVersion   (CabalSpecVersion (CabalSpecV2_2),
                                                   showCabalSpecVersion)
@@ -30,12 +33,14 @@ import qualified Text.Fuzzy.Parallel             as Fuzzy
 
 data Log
   = LogFilePathCompleterIOError FilePath IOError
+  | LogFileSplitError Position
   deriving (Show)
 
 instance Pretty Log where
   pretty = \case
     LogFilePathCompleterIOError fp ioErr ->
       "Filepath:" <+> viaShow fp <+> viaShow ioErr
+    LogFileSplitError pos ->  "Position: " <+> viaShow pos
 
 
 
@@ -169,25 +174,33 @@ mkCompletionItems l = map buildCompletion l
   can return Nothing if an error occurs
   TODO: first line can only have cabal-version: keyword
 -}
-getContext :: CabalCompletionContext -> [T.Text] -> Maybe Context
-getContext ctx ls =
-  case lvlContext of
-    TopLevel -> do
-      kwContext <- getKeyWordContext ctx ls (cabalVersionKeyword <> cabalKeywords)
-      pure (TopLevel, kwContext)
-    Stanza s ->
-      case Map.lookup s stanzaKeywordMap of
-        Nothing -> do
-          pure (Stanza s, None)
-        Just m -> do
-          kwContext <- getKeyWordContext ctx ls m
-          pure (Stanza s, kwContext)
+getContext :: MonadIO m => Recorder (WithPriority Log) -> CabalCompletionContext -> Rope -> MaybeT m Context
+getContext recorder ctx ls =
+  case prevLinesM of
+    Just prevLines -> do
+      let lvlContext =
+            if pos ^. JL.character == 0
+              then TopLevel
+              else currentLevel prevLines
+      case lvlContext of
+        TopLevel -> do
+          kwContext <- MaybeT . pure $ getKeyWordContext ctx prevLines (cabalVersionKeyword <> cabalKeywords)
+          pure (TopLevel, kwContext)
+        Stanza s ->
+          case Map.lookup s stanzaKeywordMap of
+            Nothing -> do
+              pure (Stanza s, None)
+            Just m -> do
+              kwContext <- MaybeT . pure $ getKeyWordContext ctx prevLines m
+              pure (Stanza s, kwContext)
+    Nothing -> do
+      logWith recorder Warning $ LogFileSplitError pos
+      -- basically returns nothing
+      fail "Abort computation"
  where
   pos = completionCursorPosition ctx
-  lvlContext =
-    if pos ^. JL.character == 0
-      then TopLevel
-      else currentLevel (previousLines pos ls)
+  prevLinesM = splitAtPosition pos ls
+
 
 -- ----------------------------------------------------------------
 -- Helper Functions
@@ -208,20 +221,22 @@ getKeyWordContext ctx ls keywords = do
       -- in order to be in a keyword context the cursor needs
       -- to be indented more than the keyword
       if cursorIndentation > keywordIndentation
-        then -- if the last thing written was a keyword without a value
+        then
+         -- if the last thing written was a keyword without a value
         case List.find (`T.isPrefixOf` lastLine) (Map.keys keywords) of
           Nothing -> Just None
           Just kw -> Just $ KeyWord kw
         else Just None
  where
   pos = completionCursorPosition ctx
-  currentLineM = ls Extra.!? (fromIntegral $ pos ^. JL.line)
   lastNonEmptyLineM :: Maybe T.Text
   lastNonEmptyLineM = do
-    cur' <- currentLineM
-    let cur = stripPartiallyWritten $ T.take (fromIntegral $ pos ^. JL.character) cur'
+    (curLine,rest) <- List.uncons ls
+    -- represents the current line while disregarding the
+    -- currently written text we want to complete
+    let cur = stripPartiallyWritten curLine
     List.find (not . T.null . T.stripEnd) $
-      cur : previousLines pos ls
+      cur : rest
 
 {- | Parse the given set of lines (starting before current cursor position
   up to the start of the file) to find the nearest stanza declaration,
@@ -252,12 +267,20 @@ makeCabalCompletionItem r insertTxt displayTxt =
 {- | Get all lines before the given cursor position in the given file
   and reverse their order to traverse backwards starting from the current position
 -}
-previousLines :: Position -> [T.Text] -> [T.Text]
-previousLines pos ls = reverse $ take (fromIntegral currentLine) ls
- where
-  currentLine = pos ^. JL.line
+splitAtPosition :: Position -> Rope -> Maybe [T.Text]
+splitAtPosition pos ls = do
+  split <- splitFile
+  pure $ reverse $ Rope.lines $ fst split
+    where
+    splitFile = Rope.splitAtPosition ropePos ls
+    ropePos =
+      Rope.Position
+      { Rope.posLine = fromIntegral $ pos ^. JL.line
+      , Rope.posColumn = fromIntegral $ pos ^. JL.character
+      }
 
--- | Takes a line of text and removes the last partially written word.
+-- | Takes a line of text and removes the last partially
+-- written text to be completed
 stripPartiallyWritten :: T.Text -> T.Text
 stripPartiallyWritten = T.dropWhileEnd (\y -> (y /= ' ') && (y /= ':'))
 

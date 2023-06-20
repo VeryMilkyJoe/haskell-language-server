@@ -1,4 +1,5 @@
 {-# LANGUAGE DisambiguateRecordFields #-}
+{-# LANGUAGE LambdaCase               #-}
 {-# LANGUAGE NamedFieldPuns           #-}
 {-# LANGUAGE OverloadedLabels         #-}
 {-# LANGUAGE OverloadedStrings        #-}
@@ -10,12 +11,14 @@ module Main (
 
 import           Control.Lens                    ((^.))
 import           Control.Monad                   (guard)
+import           Control.Monad.Trans.Maybe       (runMaybeT)
 import qualified Data.ByteString                 as BS
 import           Data.Either                     (isRight)
 import           Data.List                       (sort)
 import           Data.Row
 import qualified Data.Text                       as T
 import qualified Data.Text                       as Text
+import qualified Data.Text.Utf16.Rope            as Rope
 import           Ide.Plugin.Cabal
 import           Ide.Plugin.Cabal.Completions    hiding (Log)
 import           Ide.Plugin.Cabal.LicenseSuggest (licenseErrorSuggestion)
@@ -127,7 +130,11 @@ filePathCompletionContextTests :: TestTree
 filePathCompletionContextTests =
     testGroup
         "File Path Completion Context Tests"
-        [ testCase "empty line" $ do
+        [ testCase "empty file - start" $ do
+            let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "" 0 0)
+            completionSuffix complContext @?= Just ""
+            completionPrefix complContext @?= ""
+        , testCase "only whitespaces" $ do
             let complContext = getCabalCompletionContext "" (simplePosPrefixInfo "   " 0 3)
             completionSuffix complContext @?= Just ""
             completionPrefix complContext @?= ""
@@ -346,78 +353,102 @@ contextTests =
         [ testCase "Empty File - Start" $ do
             -- for a completely empty file, the context needs to
             -- be top level without a specified keyword
-            getContext (simpleCabalCompletionContext $ Position 0 0) [""] @?= Just (TopLevel, None)
+            ctx <- callGetContext (Position 0 0) [""]
+            ctx @?= (TopLevel, None)
         , testCase "Cabal version keyword - no value, no space after :" $ do
             -- on a file, where the keyword is already written
             -- the context should still be toplevel but the keyword should be recognized
-            getContext (simpleCabalCompletionContext $ Position 0 14) ["cabal-version:"] @?= Just (TopLevel, KeyWord "cabal-version:")
+            ctx <- callGetContext (Position 0 14) ["cabal-version:"]
+            ctx @?= (TopLevel, KeyWord "cabal-version:")
         , testCase "Cabal version keyword - cursor in keyword" $ do
             -- on a file, where the keyword is already written
             -- but the cursor is in the middle of the keyword,
             -- we are not in a keyword context
-            getContext (simpleCabalCompletionContext $ Position 0 5) ["cabal-version:"] @?= Just (TopLevel, None)
+            ctx <- callGetContext (Position 0 5) ["cabal-version:"]
+            ctx @?= (TopLevel, None)
         , testCase "Cabal version keyword - no value, many spaces" $ do
             -- on a file, where the "cabal-version:" keyword is already written
             -- the context should still be top level but the keyword should be recognized
-            getContext (simpleCabalCompletionContext $ Position 0 45) ["cabal-version:" <> T.replicate 50 " "] @?= Just (TopLevel, KeyWord "cabal-version:")
+            ctx <- callGetContext (Position 0 45) ["cabal-version:" <> T.replicate 50 " "]
+            ctx @?= (TopLevel, KeyWord "cabal-version:")
         , testCase "Cabal version keyword - keyword partly written" $ do
             -- in the first line of the file, if the keyword
             -- has not been written completely, the keyword context
             -- should still be None
-            getContext (simpleCabalCompletionContext $ Position 0 5) ["cabal"] @?= Just (TopLevel, None)
+            ctx <- callGetContext (Position 0 5) ["cabal"]
+            ctx @?= (TopLevel, None)
         , testCase "Cabal version keyword - value partly written" $ do
             -- in the first line of the file, if the keyword
             -- has not been written completely, the keyword context
             -- should still be None
-            getContext (simpleCabalCompletionContext $ Position 0 17) ["cabal-version: 1."] @?= Just (TopLevel, KeyWord "cabal-version:")
+            ctx <- callGetContext (Position 0 17) ["cabal-version: 1."]
+            ctx @?= (TopLevel, KeyWord "cabal-version:")
         , testCase "Inside Stanza - no keyword" $ do
             -- on a file, where the library stanza has been defined
             -- but no keyword is defined afterwards, the stanza context should be recognized
-            getContext (simpleCabalCompletionContext $ Position 3 2) libraryStanzaData @?= Just (Stanza "library", None)
+            ctx <- callGetContext (Position 3 2) libraryStanzaData
+            ctx @?= (Stanza "library", None)
         , testCase "Inside Stanza - keyword, no value" $ do
             -- on a file, where the library stanza and a keyword
             -- has been defined, the keyword and stanza should be recognized
-            getContext (simpleCabalCompletionContext $ Position 4 21) libraryStanzaData @?= Just (Stanza "library", KeyWord "build-depends:")
+            ctx <- callGetContext (Position 4 21) libraryStanzaData
+            ctx @?= (Stanza "library", KeyWord "build-depends:")
         , expectFailBecause "While not valid, it is not that important to make the code more complicated for this" $
             testCase "Cabal version keyword - no value, next line" $ do
                 -- if the cabal version keyword has been written but without a value,
                 -- in the next line we still should be in top level context with no keyword
                 -- since the cabal version keyword and value pair need to be in the same line
-                getContext (simpleCabalCompletionContext $ Position 1 2) ["cabal-version:", ""] @?= Just (TopLevel, None)
+                ctx <- callGetContext (Position 1 2) ["cabal-version:", ""]
+                ctx @?= (TopLevel, None)
         , testCase "Non-cabal-version keyword - no value, next line indentented position" $ do
             -- if a keyword, other than the cabal version keyword has been written
             -- with no value, in the next line we still should be in top level keyword context
             -- of the keyword with no value, since its value may be written in the next line
-            getContext (simpleCabalCompletionContext $ Position 2 4) topLevelData @?= Just (TopLevel, KeyWord "name:")
+            ctx <- callGetContext (Position 2 4) topLevelData
+            ctx @?= (TopLevel, KeyWord "name:")
         , testCase "Non-cabal-version keyword - no value, next line at start" $ do
             -- if a keyword, other than the cabal version keyword has been written
             -- with no value, in the next line we still should be in top level context
             -- but not the keyword's, since it is not viable to write a value for a
             -- keyword a the start of the next line
-            getContext (simpleCabalCompletionContext $ Position 2 0) topLevelData @?= Just (TopLevel, None)
+            ctx <- callGetContext (Position 2 0) topLevelData
+            ctx @?= (TopLevel, None)
         , testCase "Non-cabal-version keyword - no value, multiple lines between" $ do
             -- if a keyword, other than the cabal version keyword has been written
             -- with no value, even with multiple lines in between we can still write the
             -- value corresponding to the keyword
-            getContext (simpleCabalCompletionContext $ Position 5 4) topLevelData @?= Just (TopLevel, KeyWord "name:")
+            ctx <- callGetContext (Position 5 4) topLevelData
+            ctx @?= (TopLevel, KeyWord "name:")
         , testCase "Keyword inside stanza - cursor indented more than keyword in next line" $ do
             -- if a keyword, other than the cabal version keyword has been written
             -- in a stanza context with no value, then the value may be written in the next line,
             -- when the cursor is indented more than the keyword
-            getContext (simpleCabalCompletionContext $ Position 5 8) libraryStanzaData @?= Just (Stanza "library", KeyWord "build-depends:")
+            ctx <- callGetContext (Position 5 8) libraryStanzaData
+            ctx @?= (Stanza "library", KeyWord "build-depends:")
         , testCase "Keyword inside stanza - cursor indented less than keyword in next line" $ do
             -- if a keyword, other than the cabal version keyword has been written
             -- in a stanza context with no value, then the value may not be written in the next line,
             -- when the cursor is indented less than the keyword
-            getContext (simpleCabalCompletionContext $ Position 5 2) libraryStanzaData @?= Just (Stanza "library", None)
+            ctx <- callGetContext (Position 5 2) libraryStanzaData
+            ctx @?= (Stanza "library", None)
         , testCase "Keyword inside stanza - cursor at start of next line" $ do
             -- in a stanza context with no value the value may not be written in the next line,
             -- when the cursor is not indented and we are in the top level context
-            getContext (simpleCabalCompletionContext $ Position 5 0) libraryStanzaData @?= Just (TopLevel, None)
+            ctx <- callGetContext (Position 5 0) libraryStanzaData
+            ctx@?= (TopLevel, None)
         , testCase "Top level - cursor in later line with partially written value" $ do
-            getContext (simpleCabalCompletionContext $ Position 5 13) topLevelData @?= Just (TopLevel, KeyWord "name:")
+            ctx <- callGetContext (Position 5 13) topLevelData
+            ctx @?= (TopLevel, KeyWord "name:")
         ]
     where
+        callGetContext :: Position -> [T.Text] -> IO Context
+        callGetContext pos ls = do
+            runMaybeT (getContext mempty (simpleCabalCompletionContext pos) (Rope.fromText $ T.unlines ls))
+                >>= \case
+                Nothing -> assertFailure "Context must be found"
+                Just ctx -> pure ctx
+
+
         simpleCabalCompletionContext :: Position -> CabalCompletionContext
         simpleCabalCompletionContext pos =
             CabalCompletionContext

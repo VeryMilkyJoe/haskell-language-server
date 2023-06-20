@@ -16,13 +16,13 @@ import           Control.Concurrent.Strict
 import           Control.DeepSeq
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
+import           Control.Monad.Trans.Maybe       (runMaybeT)
 import qualified Data.ByteString                 as BS
 import           Data.Hashable
 import           Data.HashMap.Strict             (HashMap)
 import qualified Data.HashMap.Strict             as HashMap
 import qualified Data.List.NonEmpty              as NE
 import qualified Data.Text.Encoding              as Encoding
-import qualified Data.Text.Utf16.Rope            as Rope
 import           Data.Typeable
 import           Development.IDE                 as D
 import           Development.IDE.Core.Shake      (restartShakeSession)
@@ -288,14 +288,16 @@ completion recorder _ide _ complParams = do
  where
   result :: Maybe VFS.PosPrefixInfo -> FilePath -> VFS.VirtualFile -> IO [CompletionItem]
   result Nothing _ _ = pure []
-  result (Just prefix) fp cnts
-    | Just ctx <- context = do
+  result (Just prefix) fp cnts = do
+    runMaybeT context >>= \case
+      Nothing -> pure []
+      Just ctx -> do
         logWith recorder Debug $ LogCompletionContext ctx pos
         let completer = Completions.contextToCompleter ctx
-        completions <- completer (cmapWithPrio LogCompletions recorder) completionContext
+        completions <- completer completerRecorder completionContext
         pure $ Completions.mkCompletionItems completions
-    | otherwise = pure []
    where
+    completerRecorder = cmapWithPrio LogCompletions recorder
     pos = VFS.cursorPos prefix
-    context = Completions.getContext completionContext (Rope.lines $ cnts ^. VFS.file_text)
+    context = Completions.getContext completerRecorder completionContext (cnts ^. VFS.file_text)
     completionContext = Completions.getCabalCompletionContext fp prefix
