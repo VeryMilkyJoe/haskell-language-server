@@ -34,6 +34,7 @@ import qualified Ide.Plugin.Cabal.Completions    as Completions
 import qualified Ide.Plugin.Cabal.Diagnostics    as Diagnostics
 import qualified Ide.Plugin.Cabal.LicenseSuggest as LicenseSuggest
 import qualified Ide.Plugin.Cabal.Parse          as Parse
+import qualified Ide.Plugin.Cabal.Types          as Types
 import           Ide.Types
 import qualified Language.LSP.Protocol.Lens      as JL
 import qualified Language.LSP.Protocol.Message   as LSP
@@ -49,8 +50,8 @@ data Log
   | LogDocSaved Uri
   | LogDocClosed Uri
   | LogFOI (HashMap NormalizedFilePath FileOfInterestStatus)
-  | LogCompletionContext Completions.Context Position
-  | LogCompletions Completions.Log
+  | LogCompletionContext Types.Context Position
+  | LogCompletions Types.Log
   deriving (Show)
 
 instance Pretty Log where
@@ -68,62 +69,65 @@ instance Pretty Log where
       "Closed text document:" <+> pretty (getUri uri)
     LogFOI files ->
       "Set files of interest to:" <+> viaShow files
-    LogCompletionContext context position->
-      "Determined completion context:" <+> viaShow context
-        <+> "for cursor position:" <+> viaShow position
+    LogCompletionContext context position ->
+      "Determined completion context:"
+        <+> viaShow context
+        <+> "for cursor position:"
+        <+> viaShow position
     LogCompletions logs -> pretty logs
 
 descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
-descriptor recorder plId = (defaultCabalPluginDescriptor plId)
-  { pluginRules = cabalRules recorder
-  , pluginHandlers = mconcat
-      [ mkPluginHandler LSP.SMethod_TextDocumentCodeAction licenseSuggestCodeAction
-      , mkPluginHandler LSP.SMethod_TextDocumentCompletion $ completion recorder
-      ]
-  , pluginNotificationHandlers = mconcat
-  [ mkPluginNotificationHandler LSP.SMethod_TextDocumentDidOpen $
-      \ide vfs _ (DidOpenTextDocumentParams TextDocumentItem{_uri,_version}) -> liftIO $ do
-      whenUriFile _uri $ \file -> do
-        log' Debug $ LogDocOpened _uri
-        addFileOfInterest recorder ide file Modified{firstOpen=True}
-        restartCabalShakeSession (shakeExtras ide) vfs file "(opened)"
+descriptor recorder plId =
+  (defaultCabalPluginDescriptor plId)
+    { pluginRules = cabalRules recorder
+    , pluginHandlers =
+        mconcat
+          [ mkPluginHandler LSP.SMethod_TextDocumentCodeAction licenseSuggestCodeAction
+          , mkPluginHandler LSP.SMethod_TextDocumentCompletion $ completion recorder
+          ]
+    , pluginNotificationHandlers =
+        mconcat
+          [ mkPluginNotificationHandler LSP.SMethod_TextDocumentDidOpen $
+              \ide vfs _ (DidOpenTextDocumentParams TextDocumentItem{_uri, _version}) -> liftIO $ do
+                whenUriFile _uri $ \file -> do
+                  log' Debug $ LogDocOpened _uri
+                  addFileOfInterest recorder ide file Modified{firstOpen = True}
+                  restartCabalShakeSession (shakeExtras ide) vfs file "(opened)"
+          , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidChange $
+              \ide vfs _ (DidChangeTextDocumentParams VersionedTextDocumentIdentifier{_uri} _) -> liftIO $ do
+                whenUriFile _uri $ \file -> do
+                  log' Debug $ LogDocModified _uri
+                  addFileOfInterest recorder ide file Modified{firstOpen = False}
+                  restartCabalShakeSession (shakeExtras ide) vfs file "(changed)"
+          , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidSave $
+              \ide vfs _ (DidSaveTextDocumentParams TextDocumentIdentifier{_uri} _) -> liftIO $ do
+                whenUriFile _uri $ \file -> do
+                  log' Debug $ LogDocSaved _uri
+                  addFileOfInterest recorder ide file OnDisk
+                  restartCabalShakeSession (shakeExtras ide) vfs file "(saved)"
+          , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidClose $
+              \ide vfs _ (DidCloseTextDocumentParams TextDocumentIdentifier{_uri}) -> liftIO $ do
+                whenUriFile _uri $ \file -> do
+                  log' Debug $ LogDocClosed _uri
+                  deleteFileOfInterest recorder ide file
+                  restartCabalShakeSession (shakeExtras ide) vfs file "(closed)"
+          ]
+    }
+ where
+  log' = logWith recorder
 
-  , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidChange $
-      \ide vfs _ (DidChangeTextDocumentParams VersionedTextDocumentIdentifier{_uri} _) -> liftIO $ do
-      whenUriFile _uri $ \file -> do
-        log' Debug $ LogDocModified _uri
-        addFileOfInterest recorder ide file Modified{firstOpen=False}
-        restartCabalShakeSession (shakeExtras ide) vfs file "(changed)"
+  whenUriFile :: Uri -> (NormalizedFilePath -> IO ()) -> IO ()
+  whenUriFile uri act = whenJust (uriToFilePath uri) $ act . toNormalizedFilePath'
 
-  , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidSave $
-      \ide vfs _ (DidSaveTextDocumentParams TextDocumentIdentifier{_uri} _) -> liftIO $ do
-      whenUriFile _uri $ \file -> do
-        log' Debug $ LogDocSaved _uri
-        addFileOfInterest recorder ide file OnDisk
-        restartCabalShakeSession (shakeExtras ide) vfs file "(saved)"
+{- | Helper function to restart the shake session, specifically for modifying .cabal files.
+No special logic, just group up a bunch of functions you need for the base
+Notification Handlers.
 
-  , mkPluginNotificationHandler LSP.SMethod_TextDocumentDidClose $
-      \ide vfs _ (DidCloseTextDocumentParams TextDocumentIdentifier{_uri}) -> liftIO $ do
-      whenUriFile _uri $ \file -> do
-        log' Debug $ LogDocClosed _uri
-        deleteFileOfInterest recorder ide file
-        restartCabalShakeSession (shakeExtras ide) vfs file "(closed)"
-  ]
-  }
-  where
-    log' = logWith recorder
-
-    whenUriFile :: Uri -> (NormalizedFilePath -> IO ()) -> IO ()
-    whenUriFile uri act = whenJust (uriToFilePath uri) $ act . toNormalizedFilePath'
-
--- | Helper function to restart the shake session, specifically for modifying .cabal files.
--- No special logic, just group up a bunch of functions you need for the base
--- Notification Handlers.
---
--- To make sure diagnostics are up to date, we need to tell shake that the file was touched and
--- needs to be re-parsed. That's what we do when we record the dirty key that our parsing
--- rule depends on.
--- Then we restart the shake session, so that changes to our virtual files are actually picked up.
+To make sure diagnostics are up to date, we need to tell shake that the file was touched and
+needs to be re-parsed. That's what we do when we record the dirty key that our parsing
+rule depends on.
+Then we restart the shake session, so that changes to our virtual files are actually picked up.
+-}
 restartCabalShakeSession :: ShakeExtras -> VFS.VFS -> NormalizedFilePath -> String -> IO ()
 restartCabalShakeSession shakeExtras vfs file actionMsg = do
   join $ atomically $ Shake.recordDirtyKeys shakeExtras GetModificationTime [file]
@@ -190,12 +194,12 @@ kick = do
 -- Code Actions
 -- ----------------------------------------------------------------
 
-licenseSuggestCodeAction
-  :: IdeState
-  -> PluginId
-  -> CodeActionParams
-  -> LspM Config (Either LSP.ResponseError (LSP.MessageResult 'LSP.Method_TextDocumentCodeAction))
-licenseSuggestCodeAction _ _ (CodeActionParams _ _ (TextDocumentIdentifier uri) _range CodeActionContext{_diagnostics=diags}) =
+licenseSuggestCodeAction ::
+  IdeState ->
+  PluginId ->
+  CodeActionParams ->
+  LspM Config (Either LSP.ResponseError (LSP.MessageResult 'LSP.Method_TextDocumentCodeAction))
+licenseSuggestCodeAction _ _ (CodeActionParams _ _ (TextDocumentIdentifier uri) _range CodeActionContext{_diagnostics = diags}) =
   pure $ Right $ InL $ diags >>= (fmap InR . LicenseSuggest.licenseErrorAction uri)
 
 -- ----------------------------------------------------------------

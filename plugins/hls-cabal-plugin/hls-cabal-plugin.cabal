@@ -28,8 +28,11 @@ library
     Ide.Plugin.Cabal
     Ide.Plugin.Cabal.Diagnostics
     Ide.Plugin.Cabal.Completions
+    Ide.Plugin.Cabal.FilepathCompletions
     Ide.Plugin.Cabal.LicenseSuggest
     Ide.Plugin.Cabal.Parse
+    Ide.Plugin.Cabal.Types
+
 
   build-depends:
     , base                  >=4.12     && <5

@@ -9,27 +9,29 @@ module Main (
     main,
 ) where
 
-import           Control.Lens                    ((^.))
-import           Control.Monad                   (guard)
-import           Control.Monad.Trans.Maybe       (runMaybeT)
-import qualified Data.ByteString                 as BS
-import           Data.Either                     (isRight)
-import           Data.List                       (sort)
+import           Control.Lens                         ((^.))
+import           Control.Monad                        (guard)
+import           Control.Monad.Trans.Maybe            (runMaybeT)
+import qualified Data.ByteString                      as BS
+import           Data.Either                          (isRight)
+import           Data.List                            (sort)
 import           Data.Row
-import qualified Data.Text                       as T
-import qualified Data.Text                       as Text
-import qualified Data.Text.Utf16.Rope            as Rope
+import qualified Data.Text                            as T
+import qualified Data.Text                            as Text
+import qualified Data.Text.Utf16.Rope                 as Rope
 import           Ide.Plugin.Cabal
-import           Ide.Plugin.Cabal.Completions    hiding (Log)
-import           Ide.Plugin.Cabal.LicenseSuggest (licenseErrorSuggestion)
-import qualified Ide.Plugin.Cabal.Parse          as Lib
-import qualified Language.LSP.Protocol.Lens      as L
-import qualified Language.LSP.VFS                as VFS
-import           System.Directory                (getCurrentDirectory)
+import           Ide.Plugin.Cabal.Completions
+import           Ide.Plugin.Cabal.FilepathCompletions
+import           Ide.Plugin.Cabal.LicenseSuggest      (licenseErrorSuggestion)
+import qualified Ide.Plugin.Cabal.Parse               as Lib
+import           Ide.Plugin.Cabal.Types
+import qualified Language.LSP.Protocol.Lens           as L
+import qualified Language.LSP.VFS                     as VFS
+import           System.Directory                     (getCurrentDirectory)
 import           System.FilePath
 import           Test.Hls
 
-cabalPlugin :: PluginTestDescriptor Log
+cabalPlugin :: PluginTestDescriptor Ide.Plugin.Cabal.Log
 cabalPlugin = mkPluginTestDescriptor descriptor "cabal"
 
 main :: IO ()
@@ -189,7 +191,8 @@ pathCompleterTests =
             [ testCase "Current Directory" $ do
                 testDir <- getTestDir
                 compls <-
-                    listFileCompletions mempty
+                    listFileCompletions
+                        mempty
                         PathCompletionInfo
                             { partialFileName = ""
                             , partialFileDir = ""
@@ -199,7 +202,8 @@ pathCompleterTests =
             , testCase "In directory" $ do
                 testDir <- getTestDir
                 compls <-
-                    listFileCompletions mempty
+                    listFileCompletions
+                        mempty
                         PathCompletionInfo
                             { partialFileName = ""
                             , partialFileDir = "dir1/"
@@ -295,9 +299,9 @@ pathCompleterTests =
                 let insertCompletions = map itemInsert completions
                 sort insertCompletions @?= []
             ]
-        where
-            completeDirectory :: T.Text -> TestName -> IO [CabalCompletionItem]
-            completeDirectory written dirName = directoryCompleter mempty $ simpleCabalPrefixInfo written dirName
+      where
+        completeDirectory :: T.Text -> TestName -> IO [CabalCompletionItem]
+        completeDirectory written dirName = directoryCompleter mempty $ simpleCabalPrefixInfo written dirName
     fileCompleterTests :: TestTree
     fileCompleterTests =
         testGroup
@@ -343,9 +347,9 @@ pathCompleterTests =
                 let insertCompletions = map itemInsert completions
                 sort insertCompletions @?= []
             ]
-        where
-            completeFilePath :: T.Text -> TestName -> IO [CabalCompletionItem]
-            completeFilePath written dirName = filePathCompleter mempty $ simpleCabalPrefixInfo written dirName
+      where
+        completeFilePath :: T.Text -> TestName -> IO [CabalCompletionItem]
+        completeFilePath written dirName = filePathCompleter mempty $ simpleCabalPrefixInfo written dirName
 contextTests :: TestTree
 contextTests =
     testGroup
@@ -435,29 +439,29 @@ contextTests =
             -- in a stanza context with no value the value may not be written in the next line,
             -- when the cursor is not indented and we are in the top level context
             ctx <- callGetContext (Position 5 0) libraryStanzaData
-            ctx@?= (TopLevel, None)
+            ctx @?= (TopLevel, None)
         , testCase "Top level - cursor in later line with partially written value" $ do
             ctx <- callGetContext (Position 5 13) topLevelData
             ctx @?= (TopLevel, KeyWord "name:")
         ]
-    where
-        callGetContext :: Position -> [T.Text] -> IO Context
-        callGetContext pos ls = do
-            runMaybeT (getContext mempty (simpleCabalPrefixInfo pos) (Rope.fromText $ T.unlines ls))
-                >>= \case
+  where
+    callGetContext :: Position -> [T.Text] -> IO Context
+    callGetContext pos ls = do
+        runMaybeT (getContext mempty (simpleCabalPrefixInfo pos) (Rope.fromText $ T.unlines ls))
+            >>= \case
                 Nothing -> assertFailure "Context must be found"
                 Just ctx -> pure ctx
 
+    simpleCabalPrefixInfo :: Position -> CabalPrefixInfo
+    simpleCabalPrefixInfo pos =
+        CabalPrefixInfo
+            { completionPrefix = ""
+            , completionSuffix = Nothing
+            , completionCursorPosition = pos
+            , completionRange = Range pos (Position 0 0)
+            , completionWorkingDir = ""
+            }
 
-        simpleCabalPrefixInfo :: Position -> CabalPrefixInfo
-        simpleCabalPrefixInfo pos =
-            CabalPrefixInfo
-                { completionPrefix = ""
-                , completionSuffix = Nothing
-                , completionCursorPosition = pos
-                , completionRange = Range pos (Position 0 0)
-                , completionWorkingDir = ""
-                }
 -- ------------------------------------------------------------------------
 -- Integration Tests
 -- ------------------------------------------------------------------------
