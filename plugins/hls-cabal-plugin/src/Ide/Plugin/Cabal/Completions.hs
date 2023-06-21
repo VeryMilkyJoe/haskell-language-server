@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections       #-}
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use fewer imports" #-}
 
 module Ide.Plugin.Cabal.Completions where
 
@@ -25,6 +27,7 @@ import           Distribution.PackageDescription      (GenericPackageDescription
                                                        hsSourceDirs)
 import           Distribution.Types.CondTree          (CondTree (condTreeData))
 import           Distribution.Utils.Path              (getSymbolicPath)
+import           Distribution.Compat.Lens             ((?~))
 import           Ide.Plugin.Cabal.FilepathCompletions
 import           Ide.Plugin.Cabal.LicenseSuggest      (licenseNames)
 import           Ide.Plugin.Cabal.Types
@@ -34,6 +37,7 @@ import qualified Language.LSP.Protocol.Types          as LSP
 import qualified Language.LSP.VFS                     as VFS
 import qualified System.FilePath                      as FP
 import qualified Text.Fuzzy.Parallel                  as Fuzzy
+import Data.Function ((&))
 
 -- ----------------------------------------------------------------
 -- Public API for Completions
@@ -165,19 +169,45 @@ currentLevel (cur : xs)
 
 
 
-{- | Returns a CabalCompletionItem with the given starting position
+mkDefaultCompletionItem :: T.Text -> LSP.CompletionItem
+mkDefaultCompletionItem label = LSP.CompletionItem
+    { Compls._label = label
+    , Compls._labelDetails = Nothing
+    , Compls._kind = Just LSP.CompletionItemKind_Keyword
+    , Compls._tags = Nothing
+    , Compls._detail = Nothing
+    , Compls._documentation = Nothing
+    , Compls._deprecated = Nothing
+    , Compls._preselect = Nothing
+    , Compls._sortText = Nothing
+    , Compls._filterText = Nothing
+    , Compls._insertText = Nothing
+    , Compls._insertTextFormat = Nothing
+    , Compls._insertTextMode = Nothing
+    , Compls._textEdit = Nothing
+    , Compls._textEditText = Nothing
+    , Compls._additionalTextEdits = Nothing
+    , Compls._commitCharacters = Nothing
+    , Compls._command = Nothing
+    , Compls._data_ = Nothing
+    }
+
+{- | Returns a CompletionItem with the given starting position
   and text to be inserted, where the displayed text is the same as the
   inserted text.
 -}
-makeSimpleCabalCompletionItem :: Range -> T.Text -> CabalCompletionItem
-makeSimpleCabalCompletionItem r txt = CabalCompletionItem txt Nothing r
+mkSimpleCompletionItem :: Range -> T.Text -> LSP.CompletionItem
+mkSimpleCompletionItem range txt = mkDefaultCompletionItem txt
+  & JL.textEdit ?~ LSP.InL (LSP.TextEdit range txt)
 
-{- | Returns a CabalCompletionItem with the given starting position,
+
+
+{- | Returns a completionItem with the given starting position,
   text to be inserted and text to be displayed in the completion suggestion.
 -}
-mkCabalCompletionItem :: Range -> T.Text -> T.Text -> CabalCompletionItem
-mkCabalCompletionItem r insertTxt displayTxt =
-  CabalCompletionItem insertTxt (Just displayTxt) r
+mkCompletionItem :: Range -> T.Text -> T.Text -> LSP.CompletionItem
+mkCompletionItem range insertTxt displayTxt = mkDefaultCompletionItem displayTxt
+  & JL.textEdit ?~ LSP.InL (LSP.TextEdit range insertTxt)
 
 {- | Get all lines before the given cursor position in the given file
   and reverse their order to traverse backwards starting from the given position.
@@ -238,37 +268,10 @@ getCabalPrefixInfo dir prefixInfo =
   -- otherwise we parse until a space occurs
   stopConditionChars = apostropheOrSpaceSeparator : [',', ':']
 
-
 completionIndentation :: CabalPrefixInfo -> Int
 completionIndentation prefInfo = fromIntegral (pos ^. JL.character) - (T.length $ completionPrefix prefInfo)
   where
     pos = completionCursorPosition prefInfo
-
-mkCompletionItem :: CabalCompletionItem -> LSP.CompletionItem
-mkCompletionItem completionItem =
-  LSP.CompletionItem
-    { Compls._label = toDisplay
-    , Compls._labelDetails = Nothing
-    , Compls._kind = Just LSP.CompletionItemKind_Keyword
-    , Compls._tags = Nothing
-    , Compls._detail = Nothing
-    , Compls._documentation = Nothing
-    , Compls._deprecated = Nothing
-    , Compls._preselect = Nothing
-    , Compls._sortText = Nothing
-    , Compls._filterText = Nothing
-    , Compls._insertText = Nothing
-    , Compls._insertTextFormat = Nothing
-    , Compls._insertTextMode = Nothing
-    , Compls._textEdit = Just $ LSP.InL (LSP.TextEdit (itemRange completionItem) $ itemInsert completionItem)
-    , Compls._textEditText = Nothing
-    , Compls._additionalTextEdits = Nothing
-    , Compls._commitCharacters = Nothing
-    , Compls._command = Nothing
-    , Compls._data_ = Nothing
-    }
- where
-  toDisplay = fromMaybe (itemInsert completionItem) (itemDisplay completionItem)
 
 -- ----------------------------------------------------------------
 -- Completer API
@@ -288,7 +291,7 @@ constantCompleter completions _ cData  = do
   let prefInfo = cabalPrefixInfo cData
       scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) completions
       range = completionRange prefInfo
-  pure $ map (mkCompletionItem . makeSimpleCabalCompletionItem range . Fuzzy.original) scored
+  pure $ map (mkSimpleCompletionItem range . Fuzzy.original) scored
 
 -- maps snippet triggerwords to match on with their completers
 librarySnippetCompletions :: Completer
@@ -305,28 +308,10 @@ librarySnippetCompletions _ cData = do
     )
       where
         mkSnippetCompletion :: T.Text -> T.Text -> LSP.CompletionItem
-        mkSnippetCompletion insertText toDisplay= LSP.CompletionItem
-          { Compls._label = toDisplay
-          , Compls._labelDetails = Nothing
-          , Compls._kind = Just LSP.CompletionItemKind_Snippet
-          , Compls._tags = Nothing
-          , Compls._detail = Nothing
-          , Compls._documentation = Nothing
-          , Compls._deprecated = Nothing
-          , Compls._preselect = Nothing
-          , Compls._sortText = Nothing
-          , Compls._filterText = Nothing
-          , Compls._insertText = Just insertText
-          , Compls._insertTextFormat = Just LSP.InsertTextFormat_Snippet
-          , Compls._insertTextMode = Nothing
-          , Compls._textEdit = Nothing
-          , Compls._textEditText = Nothing
-          , Compls._additionalTextEdits = Nothing
-          , Compls._commitCharacters = Nothing
-          , Compls._command = Nothing
-          , Compls._data_ = Nothing
-          }
-
+        mkSnippetCompletion insertText toDisplay = mkDefaultCompletionItem toDisplay
+            & JL.kind ?~ LSP.CompletionItemKind_Snippet
+            & JL.insertText ?~ insertText
+            & JL.insertTextFormat ?~ LSP.InsertTextFormat_Snippet
         snippetMap = Map.fromList
                       [("library-snippet",
                          [ "library"
@@ -337,8 +322,6 @@ librarySnippetCompletions _ cData = do
                          ])
                       ]
 
-snippetCompleter :: T.Text -> [(T.Text, T.Text)] -> Completer
-snippetCompleter ls = undefined
 
 {- | Completer to be used when a set of values with priority weights
  attached to some values are to be completed for a field. The higher the weight,
@@ -352,7 +335,7 @@ weightedConstantCompleter completions weights _ cData = do
                 then fmap Fuzzy.original $ Fuzzy.simpleFilter' 1000 10 prefix completions customMatch
                 else topTenByWeight
       range = completionRange prefInfo
-  pure $ map (mkCompletionItem . makeSimpleCabalCompletionItem range) scored
+  pure $ map (mkSimpleCompletionItem range) scored
   where
     prefInfo = cabalPrefixInfo cData
     prefix = completionPrefix prefInfo
@@ -386,7 +369,7 @@ filePathCompleter recorder cData = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         fullFilePath <- mkFilePathCompletion suffix compl complInfo
-        pure $ mkCompletionItem $ mkCabalCompletionItem (completionRange prefInfo) fullFilePath fullFilePath
+        pure $ mkCompletionItem (completionRange prefInfo) fullFilePath fullFilePath
     )
 
 {- | Completer to be used when module paths can be completed for the field.
@@ -399,7 +382,7 @@ modulesCompleter extractionFunction recorder cData = do
     Just (gpd, _) -> do
       let sourceDirs = extractionFunction gpd
       filePathCompletions <- filePathsForExposedModules sourceDirs recorder prefInfo
-      pure $ map (\compl -> mkCompletionItem $ mkCabalCompletionItem (completionRange prefInfo) compl compl) filePathCompletions
+      pure $ map (\compl -> mkCompletionItem (completionRange prefInfo) compl compl) filePathCompletions
     Nothing -> do
       logWith recorder Debug LogUseWithStaleFastNoResult
       pure []
@@ -447,7 +430,7 @@ directoryCompleter recorder cData = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         let fullDirPath = mkPathCompletion complInfo compl
-        pure $ mkCompletionItem $ mkCabalCompletionItem (completionRange prefInfo) fullDirPath fullDirPath
+        pure $ mkCompletionItem (completionRange prefInfo) fullDirPath fullDirPath
     )
 
 -- ----------------------------------------------------------------

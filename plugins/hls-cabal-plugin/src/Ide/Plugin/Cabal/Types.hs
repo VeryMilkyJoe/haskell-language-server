@@ -53,17 +53,6 @@ data CompleterData = CompleterData
   , stanzaName      :: Maybe StanzaName
   }
 
--- | Contains information needed for a completion action
-data CabalCompletionItem = CabalCompletionItem
-  { itemInsert  :: T.Text
-  -- ^ actual text to be written into the document
-  , itemDisplay :: Maybe T.Text
-  -- ^ text displayed when completion options are shown
-  , itemRange   :: Range
-  -- ^ range where completion is to be inserted
-  }
-  deriving (Eq, Show)
-
 {- | The context a cursor can be in within a cabal file,
   we can be in stanzas or the top level,
   and additionally we can be in a context where we have already
