@@ -30,6 +30,7 @@ import qualified Language.LSP.VFS                     as VFS
 import           System.Directory                     (getCurrentDirectory)
 import           System.FilePath
 import           Test.Hls
+import Data.Maybe (fromMaybe)
 
 cabalPlugin :: PluginTestDescriptor Ide.Plugin.Cabal.Log
 cabalPlugin = mkPluginTestDescriptor descriptor "cabal"
@@ -214,6 +215,23 @@ pathCompleterTests =
             ]
         ]
   where
+    extract :: CompletionItem -> T.Text
+    extract item = case item ^. L.textEdit of
+        Just (InL v) -> v ^. L.newText
+        _ -> error ""
+    simpleCabalPrefixInfo :: T.Text -> FilePath -> CabalPrefixInfo
+    simpleCabalPrefixInfo prefix fp =
+        CabalPrefixInfo
+            { completionPrefix = prefix
+            , completionSuffix = Nothing
+            , completionCursorPosition = Position 0 0
+            , completionRange = Range (Position 0 0) (Position 0 0)
+            , completionWorkingDir = fp </> "test.cabal"
+            }
+    getTestDir :: IO FilePath
+    getTestDir = do
+        cwd <- getCurrentDirectory
+        pure $ cwd </> "test/testdata/filepath-completions/"
     pathCompletionInfoFromCompletionContextTests :: TestTree
     pathCompletionInfoFromCompletionContextTests =
         testGroup
@@ -254,42 +272,38 @@ pathCompleterTests =
             [ testCase "Current Directory" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./dir1/", "./dir2/"]
+                completions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - alternative writing" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "./" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./dir1/", "./dir2/"]
+                completions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - incomplete directory path written" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "di" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./dir1/", "./dir2/"]
+                completions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - incomplete filepath written" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "te" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== []
+                completions @?== []
             , testCase "Subdirectory - no more directories found" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "dir1/" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== []
+                completions @?== []
             , testCase "Subdirectory - available subdirectory" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "dir2/" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["dir2/dir3/"]
+                completions @?== ["dir2/dir3/"]
             , testCase "Nonexistent directory" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "dir2/dir4/" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== []
+                completions @?== []
             ]
       where
-        completeDirectory :: T.Text -> TestName -> IO [CabalCompletionItem]
-        completeDirectory written dirName = directoryCompleter mempty $ mkCompleterData $ simpleCabalPrefixInfoFromFp written dirName
+        completeDirectory :: T.Text -> TestName -> IO [T.Text]
+        completeDirectory written dirName = do
+            completer <-  directoryCompleter mempty $ mkCompleterData $ simpleCabalPrefixInfoFromFp written dirName
+            pure $ fmap extract completer
+
     fileCompleterTests :: TestTree
     fileCompleterTests =
         testGroup
@@ -297,49 +311,42 @@ pathCompleterTests =
             [ testCase "Current Directory" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./.hidden","./Content.hs", "./dir1/", "./dir2/", "./textfile.txt"]
+                completions @?== ["./.hidden","./Content.hs", "./dir1/", "./dir2/", "./textfile.txt"]
             , testCase "Current Directory - alternative writing" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "./" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./.hidden", "./Content.hs", "./dir1/", "./dir2/", "./textfile.txt"]
+                completions @?== ["./.hidden", "./Content.hs", "./dir1/", "./dir2/", "./textfile.txt"]
             , testCase "Current Directory - hidden file start" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "." testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./Content.hs", "./.hidden", "./textfile.txt"]
+                completions @?== ["./Content.hs", "./.hidden", "./textfile.txt"]
             , testCase "Current Directory - incomplete directory path written" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "di" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./dir1/", "./dir2/"]
+                completions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - incomplete filepath written" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "te" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["./Content.hs", "./textfile.txt"]
+                completions @?== ["./Content.hs", "./textfile.txt"]
             , testCase "Subdirectory" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "dir1/" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["dir1/f1.txt", "dir1/f2.hs"]
+                completions @?== ["dir1/f1.txt", "dir1/f2.hs"]
             , testCase "Subdirectory - incomplete filepath written" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "dir2/dir3/MA" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== ["dir2/dir3/MARKDOWN.md"]
+                completions @?== ["dir2/dir3/MARKDOWN.md"]
             , testCase "Nonexistent directory" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "dir2/dir4/" testDir
-                let insertCompletions = map itemInsert completions
-                insertCompletions @?== []
+                completions @?== []
             ]
       where
-        completeFilePath :: T.Text -> TestName -> IO [CabalCompletionItem]
-        completeFilePath written dirName = filePathCompleter mempty $ mkCompleterData $ simpleCabalPrefixInfoFromFp written dirName
-mkCompleterData :: CabalPrefixInfo -> CompleterData
-mkCompleterData prefInfo = CompleterData {ideState = undefined, cabalPrefixInfo = prefInfo, stanzaName = Nothing}
+        completeFilePath :: T.Text -> TestName -> IO [T.Text]
+        completeFilePath written dirName = do
+            completer <- filePathCompleter mempty $ mkCompleterData $ simpleCabalPrefixInfoFromFp written dirName
+            pure $ fmap extract completer
+
 contextTests :: TestTree
 contextTests =
     testGroup
@@ -628,6 +635,9 @@ simpleCabalPrefixInfoFromFp prefix fp =
         , completionWorkingDir = fp
         , normalizedCabalFilePath = ""
         }
+
+mkCompleterData :: CabalPrefixInfo -> CompleterData
+mkCompleterData prefInfo = CompleterData {ideState = undefined, cabalPrefixInfo = prefInfo, stanzaName = Nothing}
 
 getTestDir :: IO FilePath
 getTestDir = do

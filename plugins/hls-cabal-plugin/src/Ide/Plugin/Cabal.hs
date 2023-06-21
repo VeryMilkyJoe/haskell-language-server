@@ -41,7 +41,6 @@ import qualified Language.LSP.Protocol.Message   as LSP
 import           Language.LSP.Protocol.Types
 import           Language.LSP.Server             (LspM, getVirtualFile)
 import qualified Language.LSP.VFS                as VFS
-import System.FilePath (takeDirectory)
 
 data Log
   = LogModificationTime NormalizedFilePath FileVersion
@@ -302,7 +301,7 @@ completion recorder ide _ complParams = do
                   _ -> Nothing
               }
         completions <- completer completerRecorder completerData
-        pure $ map Completions.mkCompletionItem completions
+        pure completions
    where
     completerRecorder = cmapWithPrio LogCompletions recorder
     pos = VFS.cursorPos prefix

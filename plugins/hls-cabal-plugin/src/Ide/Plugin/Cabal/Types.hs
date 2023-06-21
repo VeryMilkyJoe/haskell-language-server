@@ -13,6 +13,7 @@ import           Data.Typeable
 import           Development.IDE        as D
 import           GHC.Generics
 import qualified Ide.Plugin.Cabal.Parse as Parse
+import Language.LSP.Protocol.Types (CompletionItem)
 
 data Log
   = LogFileSplitError Position
@@ -44,7 +45,7 @@ type instance RuleResult ParseCabal = Parse.GenericPackageDescription
 {- | Takes information needed to build possible completion items
 and returns the list of possible completion items
 -}
-type Completer = Recorder (WithPriority Log) -> CompleterData -> IO [CabalCompletionItem]
+type Completer = Recorder (WithPriority Log) -> CompleterData -> IO [CompletionItem]
 
 data CompleterData = CompleterData
   { ideState        :: IdeState
@@ -132,3 +133,11 @@ data CabalPrefixInfo = CabalPrefixInfo
   , normalizedCabalFilePath  :: NormalizedFilePath
   }
   deriving (Eq, Show)
+
+-- data PossibleCompletion = PossibleCompletion
+--   { completionTrigger          :: T.Text
+--   , completionKeyWordCompleter :: Completer
+--   , completionKeyword          :: KeyWordName
+--   , completionValueDescription :: T.Text
+--   , completionValueCompleter   :: Completer
+--   }

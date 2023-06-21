@@ -46,8 +46,8 @@ contextToCompleter :: Context -> Completer
 -- if we are in the top level of the cabal file and not in a keyword context,
 -- we can write any top level keywords or a stanza declaration
 contextToCompleter (TopLevel, None) =
-  constantCompleter $
-    Map.keys (cabalVersionKeyword <> cabalKeywords) ++ Map.keys stanzaKeywordMap
+  librarySnippetCompletions <> (constantCompleter $
+    Map.keys (cabalVersionKeyword <> cabalKeywords) ++ Map.keys stanzaKeywordMap)
 -- if we are in a keyword context in the top level,
 -- we look up that keyword in the top level context and can complete its possible values
 contextToCompleter (TopLevel, KeyWord kw) =
@@ -288,7 +288,57 @@ constantCompleter completions _ cData  = do
   let prefInfo = cabalPrefixInfo cData
       scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) completions
       range = completionRange prefInfo
-  pure $ map (makeSimpleCabalCompletionItem range . Fuzzy.original) scored
+  pure $ map (mkCompletionItem . makeSimpleCabalCompletionItem range . Fuzzy.original) scored
+
+-- maps snippet triggerwords to match on with their completers
+librarySnippetCompletions :: Completer
+librarySnippetCompletions _ cData = do
+  let prefInfo = cabalPrefixInfo cData
+      scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) ["library-snippet"]
+      range = completionRange prefInfo
+  forM
+    scored
+    (\compl -> do
+        let matched = Fuzzy.original compl
+        let completion = fromMaybe [] $ Map.lookup matched snippetMap
+        pure $ mkSnippetCompletion (T.unlines completion) matched
+    )
+      where
+        mkSnippetCompletion :: T.Text -> T.Text -> LSP.CompletionItem
+        mkSnippetCompletion insertText toDisplay= LSP.CompletionItem
+          { Compls._label = toDisplay
+          , Compls._labelDetails = Nothing
+          , Compls._kind = Just LSP.CompletionItemKind_Snippet
+          , Compls._tags = Nothing
+          , Compls._detail = Nothing
+          , Compls._documentation = Nothing
+          , Compls._deprecated = Nothing
+          , Compls._preselect = Nothing
+          , Compls._sortText = Nothing
+          , Compls._filterText = Nothing
+          , Compls._insertText = Just insertText
+          , Compls._insertTextFormat = Just LSP.InsertTextFormat_Snippet
+          , Compls._insertTextMode = Nothing
+          , Compls._textEdit = Nothing
+          , Compls._textEditText = Nothing
+          , Compls._additionalTextEdits = Nothing
+          , Compls._commitCharacters = Nothing
+          , Compls._command = Nothing
+          , Compls._data_ = Nothing
+          }
+
+        snippetMap = Map.fromList
+                      [("library-snippet",
+                         [ "library"
+                           , "  hs-source-dirs: $1"
+                           , "  exposed-modules: $0"
+                           , "  build-depends: base"
+                           , "  default-language: Haskell2010"
+                         ])
+                      ]
+
+snippetCompleter :: T.Text -> [(T.Text, T.Text)] -> Completer
+snippetCompleter ls = undefined
 
 {- | Completer to be used when a set of values with priority weights
  attached to some values are to be completed for a field. The higher the weight,
@@ -302,7 +352,7 @@ weightedConstantCompleter completions weights _ cData = do
                 then fmap Fuzzy.original $ Fuzzy.simpleFilter' 1000 10 prefix completions customMatch
                 else topTenByWeight
       range = completionRange prefInfo
-  pure $ map (makeSimpleCabalCompletionItem range) scored
+  pure $ map (mkCompletionItem . makeSimpleCabalCompletionItem range) scored
   where
     prefInfo = cabalPrefixInfo cData
     prefix = completionPrefix prefInfo
@@ -336,7 +386,7 @@ filePathCompleter recorder cData = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         fullFilePath <- mkFilePathCompletion suffix compl complInfo
-        pure $ mkCabalCompletionItem (completionRange prefInfo) fullFilePath fullFilePath
+        pure $ mkCompletionItem $ mkCabalCompletionItem (completionRange prefInfo) fullFilePath fullFilePath
     )
 
 {- | Completer to be used when module paths can be completed for the field.
@@ -349,7 +399,7 @@ modulesCompleter extractionFunction recorder cData = do
     Just (gpd, _) -> do
       let sourceDirs = extractionFunction gpd
       filePathCompletions <- filePathsForExposedModules sourceDirs recorder prefInfo
-      pure $ map (\compl -> mkCabalCompletionItem (completionRange prefInfo) compl compl) filePathCompletions
+      pure $ map (\compl -> mkCompletionItem $ mkCabalCompletionItem (completionRange prefInfo) compl compl) filePathCompletions
     Nothing -> do
       logWith recorder Debug LogUseWithStaleFastNoResult
       pure []
@@ -397,7 +447,7 @@ directoryCompleter recorder cData = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         let fullDirPath = mkPathCompletion complInfo compl
-        pure $ mkCabalCompletionItem (completionRange prefInfo) fullDirPath fullDirPath
+        pure $ mkCompletionItem $ mkCabalCompletionItem (completionRange prefInfo) fullDirPath fullDirPath
     )
 
 -- ----------------------------------------------------------------
