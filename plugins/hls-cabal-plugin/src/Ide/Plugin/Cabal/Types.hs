@@ -123,11 +123,3 @@ data CabalPrefixInfo = CabalPrefixInfo
   , completionFileName       :: T.Text
   }
   deriving (Eq, Show)
-
--- data PossibleCompletion = PossibleCompletion
---   { completionTrigger          :: T.Text
---   , completionKeyWordCompleter :: Completer
---   , completionKeyword          :: KeyWordName
---   , completionValueDescription :: T.Text
---   , completionValueCompleter   :: Completer
---   }

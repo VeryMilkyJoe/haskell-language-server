@@ -1,8 +1,6 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections       #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-{-# HLINT ignore "Use fewer imports" #-}
+
 
 module Ide.Plugin.Cabal.Completions where
 
@@ -22,13 +20,12 @@ import qualified Data.Text.Utf16.Rope                 as Rope
 import           Development.IDE                      as D
 import           Distribution.CabalSpecVersion        (CabalSpecVersion (CabalSpecV2_2),
                                                        showCabalSpecVersion)
-import           Distribution.Compat.Lens             ((^.))
+import Distribution.Compat.Lens ( (^.), (?~) )
 import           Distribution.PackageDescription      (GenericPackageDescription (..),
                                                        Library (libBuildInfo),
                                                        hsSourceDirs)
 import           Distribution.Types.CondTree          (CondTree (condTreeData))
 import           Distribution.Utils.Path              (getSymbolicPath)
-import           Distribution.Compat.Lens             ((?~))
 import           Ide.Plugin.Cabal.FilepathCompletions
 import           Ide.Plugin.Cabal.LicenseSuggest      (licenseNames)
 import           Ide.Plugin.Cabal.Types
@@ -321,15 +318,16 @@ snippetCompleter _ cData = do
             & JL.kind ?~ LSP.CompletionItemKind_Snippet
             & JL.insertText ?~ insertText
             & JL.insertTextFormat ?~ LSP.InsertTextFormat_Snippet
+        snippetMap :: Map T.Text [T.Text]
         snippetMap = Map.fromList
-                      [("library-snippet",
-                         [ "library"
-                           , "  hs-source-dirs: $1"
-                           , "  exposed-modules: $0"
-                           , "  build-depends: base"
-                           , "  default-language: Haskell2010"
-                         ]),
-                        ("recommended-fields",
+                      [ ("library-snippet",
+                          [ "library"
+                            , "  hs-source-dirs: $1"
+                            , "  exposed-modules: $2"
+                            , "  build-depends: base"
+                            , "  default-language: Haskell2010"
+                          ])
+                      , ("recommended-fields",
                           [ "cabal-version: $1"
                           , "name: " <> completionFileName prefInfo
                           , "version: 0.1.0.0"
@@ -338,6 +336,24 @@ snippetCompleter _ cData = do
                           , "synopsis: $6"
                           , "license: $7"
                           , "build-type: Simple"
+                          ])
+                      , ("executable-snippet",
+                          [ "executable $1"
+                          , "  main-is: ${2:Main.hs}"
+                          ])
+                      , ("benchmark-snippet",
+                          [ "benchmark $1"
+                          , "  type: exitcode-stdio-1.0"
+                          , "  main-is: ${3:Main.hs}"
+                          ])
+                      , ("testsuite-snippet",
+                          [ "test-suite $1"
+                          , "  type: exitcode-stdio-1.0"
+                          , "  main-is: ${3:Main.hs}"
+                          ])
+                      , ("common-warnings",
+                          [ "common warnings"
+                          , "  ghc-options: -Wall"
                           ]
                         )
                       ]
