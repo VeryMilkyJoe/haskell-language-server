@@ -13,6 +13,7 @@ import           Data.Maybe                           (fromMaybe)
 import qualified Data.Text                            as T
 import           Data.Text.Utf16.Rope                 (Rope)
 import qualified Data.Text.Utf16.Rope                 as Rope
+import           Debug.Trace                          (traceShowM)
 import           Development.IDE                      as D
 import           Distribution.CabalSpecVersion        (CabalSpecVersion (CabalSpecV2_2),
                                                        showCabalSpecVersion)
@@ -25,6 +26,7 @@ import qualified Language.LSP.Protocol.Types          as Compls (CompletionItem 
 import qualified Language.LSP.Protocol.Types          as LSP
 import qualified Language.LSP.VFS                     as VFS
 import qualified Text.Fuzzy.Parallel                  as Fuzzy
+import Data.Ord (Down(..))
 
 -- ----------------------------------------------------------------
 -- Public API for Completions
@@ -265,8 +267,29 @@ constantCompleter completions _ ctxInfo = do
   let range = completionRange ctxInfo
   pure $ map (makeSimpleCabalCompletionItem range . Fuzzy.original) scored
 
+weightedConstantCompleter :: [T.Text] -> Map T.Text Double -> Completer
+weightedConstantCompleter completions weights  _ ctxInfo = do
+  let scored = if perfectScore > 0
+                then fmap Fuzzy.original $ Fuzzy.simpleFilter' 1000 10 prefix completions customMatch
+                else topTenByWeight
+  let range = completionRange ctxInfo
+  pure $ map (makeSimpleCabalCompletionItem range) scored
+  where
+    prefix = completionPrefix ctxInfo
+    perfectScore = fromMaybe (error "match is broken") $ Fuzzy.match prefix prefix
+    customMatch :: (T.Text -> T.Text -> Maybe Int)
+    customMatch toSearch searchSpace = do
+      matched <- Fuzzy.match toSearch searchSpace
+      let weight = fromMaybe 0 $ Map.lookup searchSpace weights
+      let score = min
+            perfectScore
+            (round (fromIntegral matched * (1 + weight)))
+      pure score
+    topTenByWeight ::  [T.Text]
+    topTenByWeight = take 10 $ map fst $ List.sortOn (Down . snd) $ Map.assocs weights
+
 {- | Completer to be used when a file path can be
-  completed for a field, takes the file path of the directory to start from.
+  completed for a field, takes the file path of  the directory to start from.
   Completes file paths as well as directories.
 -}
 filePathCompleter :: Completer
@@ -327,7 +350,7 @@ cabalKeywords =
     [ ("name:", noopCompleter) -- TODO: should complete to filename, needs meta info
     , ("version:", noopCompleter)
     , ("build-type:", constantCompleter ["Simple", "Custom", "Configure", "Make"])
-    , ("license:", constantCompleter licenseNames)
+    , ("license:", weightedConstantCompleter licenseNames weightedLicenseNames)
     , ("license-file:", filePathCompleter)
     , ("license-files:", filePathCompleter) -- list of filenames
     , ("copyright:", noopCompleter)
@@ -411,7 +434,7 @@ stanzaKeywordMap =
       )
     ,
       ( "source-repository"
-      , Map.fromList $
+      , Map.fromList
           [
             ( "type:"
             , constantCompleter
@@ -475,6 +498,56 @@ stanzaKeywordMap =
     , ("extra-framework-dirs:", directoryCompleter) -- list of directories
     , ("mixins:", noopCompleter)
     ]
+
+weightedLicenseNames :: Map T.Text Double
+weightedLicenseNames = fmap statisticsToWeight $ Map.fromList
+    [("BSD-3-Clause",9955)
+    , ("MIT",3336)
+    , ("GPL-3.0-only",679)
+    , ("LicenseRef-OtherLicense",521)
+    , ("Apache-2.0",514)
+    , ("LicenseRef-GPL",443)
+    , ("LicenseRef-PublicDomain",318)
+    , ("MPL-2.0",288)
+    , ("BSD-2-Clause",174)
+    , ("GPL-2.0-only",160)
+    , ("LicenseRef-LGPL",146)
+    , ("LGPL-2.1-only",112)
+    , ("LGPL-3.0-only",100)
+    , ("AGPL-3.0-only",96)
+    , ("ISC",89)
+    , ("LicenseRef-Apache",45)
+    , ("GPL-3.0-or-later",43)
+    , ("BSD-2-Clause-Patent",33)
+    , ("GPL-2.0-or-later",21)
+    , ("CC0-1.0",16)
+    , ("AGPL-3.0-or-later",15)
+    , ("LGPL-2.1-or-later",12)
+    , ("(BSD-2-Clause OR Apache-2.0)",10)
+    , ("(Apache-2.0 OR MPL-2.0)",8)
+    , ("LicenseRef-AGPL",6)
+    , ("(BSD-3-Clause OR Apache-2.0)",4)
+    , ("0BSD",3)
+    , ("BSD-4-Clause",3)
+    , ("LGPL-3.0-or-later",3)
+    , ("LicenseRef-LGPL-2",2)
+    , ("GPL-2.0-or-later AND BSD-3-Clause",2)
+    , ("NONE",2)
+    , ("Zlib",2)
+    , ("(Apache-2.0 OR BSD-3-Clause)",2)
+    , ("BSD-3-Clause AND GPL-2.0-or-later",2)
+    , ("BSD-3-Clause AND GPL-3.0-or-later",2)
+    ]
+  where
+    statisticsToWeight :: Int -> Double
+    statisticsToWeight stat
+      | stat < 10 = 0.1
+      | stat < 20 = 0.3
+      | stat < 50 = 0.4
+      | stat < 100 = 0.5
+      | stat < 500 = 0.6
+      | stat < 650 = 0.7
+      | otherwise = 0.9
 
 -- cabalFlagKeywords :: [(T.Text, T.Text)]
 -- cabalFlagKeywords =

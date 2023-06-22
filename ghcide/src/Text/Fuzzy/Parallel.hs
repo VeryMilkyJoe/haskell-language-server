@@ -1,8 +1,8 @@
 -- | Parallel versions of 'filter' and 'simpleFilter'
 
 module Text.Fuzzy.Parallel
-(   filter,
-    simpleFilter,
+(   filter, filter',
+    simpleFilter, simpleFilter',
     match,
     Scored(..)
 ) where
@@ -102,6 +102,40 @@ simpleFilter :: Int      -- ^ Chunk size. 1000 works well.
 simpleFilter chunk maxRes pattern xs =
   filter chunk maxRes pattern xs id
 
+
+-- | The function to filter a list of values by fuzzy search on the text extracted from them.
+filter' :: Int           -- ^ Chunk size. 1000 works well.
+       -> Int           -- ^ Max. number of results wanted
+       -> T.Text        -- ^ Pattern.
+       -> [t]           -- ^ The list of values containing the text to search in.
+       -> (t -> T.Text) -- ^ The function to extract the text from the container.
+       -> (T.Text -> T.Text -> Maybe Int) -- ^ Function to use for matching
+       -> [Scored t]    -- ^ The list of results, sorted, highest score first.
+filter' chunkSize maxRes pattern ts extract match' = partialSortByAscScore maxRes perfectScore (concat vss)
+  where
+      -- Preserve case for the first character, make all others lowercase
+      pattern' = case T.uncons pattern of
+        Just (c, rest) -> T.cons c (T.toLower rest)
+        _              -> pattern
+      vss = map (mapMaybe (\t -> flip Scored t <$> match' pattern' (extract t))) (chunkList chunkSize ts)
+        `using` parList (evalList rseq)
+      perfectScore = fromMaybe (error $ T.unpack pattern) $ match' pattern' pattern'
+
+-- | Return all elements of the list that have a fuzzy
+-- match against the pattern, using a custom match function. Runs with default settings where
+-- nothing is added around the matches, as case insensitive.
+--
+-- >>> simpleFilter 1000 10 "vm" ["vim", "emacs", "virtual machine"]
+-- [Scored {score = 4, original = "vim"},Scored {score = 4, original = "virtual machine"}]
+{-# INLINABLE simpleFilter' #-}
+simpleFilter' :: Int      -- ^ Chunk size. 1000 works well.
+             -> Int      -- ^ Max. number of results wanted
+             -> T.Text   -- ^ Pattern to look for.
+             -> [T.Text] -- ^ List of texts to check.
+             -> (T.Text -> T.Text -> Maybe Int) -- ^ Function to use for matching
+             -> [Scored T.Text] -- ^ The ones that match.
+simpleFilter' chunk maxRes pattern xs match' =
+  filter' chunk maxRes pattern xs id match'
 --------------------------------------------------------------------------------
 
 chunkList :: Int -> [a] -> [[a]]
