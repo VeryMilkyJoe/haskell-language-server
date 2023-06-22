@@ -120,6 +120,7 @@ data CabalPrefixInfo = CabalPrefixInfo
   , completionWorkingDir     :: FilePath
   -- ^ filepath of the handled cabal file
   , normalizedCabalFilePath  :: NormalizedFilePath
+  , completionFileName       :: T.Text
   }
   deriving (Eq, Show)
 

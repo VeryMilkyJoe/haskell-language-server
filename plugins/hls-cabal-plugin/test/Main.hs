@@ -30,7 +30,6 @@ import qualified Language.LSP.VFS                     as VFS
 import           System.Directory                     (getCurrentDirectory)
 import           System.FilePath
 import           Test.Hls
-import Data.Maybe (fromMaybe)
 
 cabalPlugin :: PluginTestDescriptor Ide.Plugin.Cabal.Log
 cabalPlugin = mkPluginTestDescriptor descriptor "cabal"
@@ -219,19 +218,7 @@ pathCompleterTests =
     extract item = case item ^. L.textEdit of
         Just (InL v) -> v ^. L.newText
         _ -> error ""
-    simpleCabalPrefixInfo :: T.Text -> FilePath -> CabalPrefixInfo
-    simpleCabalPrefixInfo prefix fp =
-        CabalPrefixInfo
-            { completionPrefix = prefix
-            , completionSuffix = Nothing
-            , completionCursorPosition = Position 0 0
-            , completionRange = Range (Position 0 0) (Position 0 0)
-            , completionWorkingDir = fp </> "test.cabal"
-            }
-    getTestDir :: IO FilePath
-    getTestDir = do
-        cwd <- getCurrentDirectory
-        pure $ cwd </> "test/testdata/filepath-completions/"
+
     pathCompletionInfoFromCompletionContextTests :: TestTree
     pathCompletionInfoFromCompletionContextTests =
         testGroup
@@ -479,6 +466,7 @@ exposedModulesTests =
             let prefInfo = simpleCabalPrefixInfoFromFp "" cwd
             filePathsForExposedModules srcDirs mempty prefInfo
 
+
 -- ------------------------ ------------------------------------------------
 -- Integration Tests
 -- ------------------------------------------------------------------------
@@ -624,6 +612,7 @@ simpleCabalPrefixInfoFromPos pos prefix =
         , completionRange = Range pos (Position 0 0)
         , completionWorkingDir = ""
         , normalizedCabalFilePath = ""
+        , completionFileName = "test"
         }
 simpleCabalPrefixInfoFromFp :: T.Text -> FilePath -> CabalPrefixInfo
 simpleCabalPrefixInfoFromFp prefix fp =
@@ -634,6 +623,7 @@ simpleCabalPrefixInfoFromFp prefix fp =
         , completionRange = Range (Position 0 0) (Position 0 0)
         , completionWorkingDir = fp
         , normalizedCabalFilePath = ""
+        , completionFileName = "test"
         }
 
 mkCompleterData :: CabalPrefixInfo -> CompleterData

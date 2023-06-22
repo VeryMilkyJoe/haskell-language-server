@@ -10,6 +10,7 @@ import           Control.Applicative                  (asum)
 import           Control.Monad                        (forM)
 import           Control.Monad.IO.Class               (MonadIO)
 import           Control.Monad.Trans.Maybe
+import           Data.Function                        ((&))
 import qualified Data.List                            as List
 import           Data.Map                             (Map)
 import qualified Data.Map                             as Map
@@ -36,8 +37,8 @@ import qualified Language.LSP.Protocol.Types          as Compls (CompletionItem 
 import qualified Language.LSP.Protocol.Types          as LSP
 import qualified Language.LSP.VFS                     as VFS
 import qualified System.FilePath                      as FP
+import           System.FilePath                      (takeBaseName)
 import qualified Text.Fuzzy.Parallel                  as Fuzzy
-import Data.Function ((&))
 
 -- ----------------------------------------------------------------
 -- Public API for Completions
@@ -50,7 +51,7 @@ contextToCompleter :: Context -> Completer
 -- if we are in the top level of the cabal file and not in a keyword context,
 -- we can write any top level keywords or a stanza declaration
 contextToCompleter (TopLevel, None) =
-  librarySnippetCompletions <> (constantCompleter $
+  snippetCompleter <> (constantCompleter $
     Map.keys (cabalVersionKeyword <> cabalKeywords) ++ Map.keys stanzaKeywordMap)
 -- if we are in a keyword context in the top level,
 -- we look up that keyword in the top level context and can complete its possible values
@@ -238,14 +239,15 @@ stripPartiallyWritten = T.dropWhileEnd (\y -> (y /= ' ') && (y /= ':'))
   and calculates the range in the document in which to complete.
 -}
 getCabalPrefixInfo :: FilePath -> VFS.PosPrefixInfo -> CabalPrefixInfo
-getCabalPrefixInfo dir prefixInfo =
+getCabalPrefixInfo fp prefixInfo =
   CabalPrefixInfo
     { completionPrefix = completionPrefix'
     , completionSuffix = Just suffix
     , completionCursorPosition = VFS.cursorPos prefixInfo
     , completionRange = Range completionStart completionEnd
-    , completionWorkingDir = FP.takeDirectory dir
-    , normalizedCabalFilePath = LSP.toNormalizedFilePath dir
+    , completionWorkingDir = FP.takeDirectory fp
+    , normalizedCabalFilePath = LSP.toNormalizedFilePath fp
+    , completionFileName = T.pack $ takeBaseName fp
     }
  where
   completionEnd = VFS.cursorPos prefixInfo
@@ -293,12 +295,18 @@ constantCompleter completions _ cData  = do
       range = completionRange prefInfo
   pure $ map (mkSimpleCompletionItem range . Fuzzy.original) scored
 
--- maps snippet triggerwords to match on with their completers
-librarySnippetCompletions :: Completer
-librarySnippetCompletions _ cData = do
-  let prefInfo = cabalPrefixInfo cData
-      scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) ["library-snippet"]
+nameCompleter :: Completer
+nameCompleter _ cData = do
+  let scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) [completionFileName prefInfo]
+      prefInfo = cabalPrefixInfo cData
       range = completionRange prefInfo
+  pure $ map (mkSimpleCompletionItem range . Fuzzy.original) scored
+
+
+-- maps snippet triggerwords to match on with their completers
+snippetCompleter :: Completer
+snippetCompleter _ cData = do
+  let scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) $ Map.keys snippetMap
   forM
     scored
     (\compl -> do
@@ -307,6 +315,7 @@ librarySnippetCompletions _ cData = do
         pure $ mkSnippetCompletion (T.unlines completion) matched
     )
       where
+        prefInfo = cabalPrefixInfo cData
         mkSnippetCompletion :: T.Text -> T.Text -> LSP.CompletionItem
         mkSnippetCompletion insertText toDisplay = mkDefaultCompletionItem toDisplay
             & JL.kind ?~ LSP.CompletionItemKind_Snippet
@@ -319,7 +328,18 @@ librarySnippetCompletions _ cData = do
                            , "  exposed-modules: $0"
                            , "  build-depends: base"
                            , "  default-language: Haskell2010"
-                         ])
+                         ]),
+                        ("recommended-fields",
+                          [ "cabal-version: $1"
+                          , "name: " <> completionFileName prefInfo
+                          , "version: 0.1.0.0"
+                          , "maintainer: $4"
+                          , "category: $5"
+                          , "synopsis: $6"
+                          , "license: $7"
+                          , "build-type: Simple"
+                          ]
+                        )
                       ]
 
 
@@ -451,7 +471,7 @@ cabalVersionKeyword =
 cabalKeywords :: Map KeyWordName Completer
 cabalKeywords =
   Map.fromList
-    [ ("name:", noopCompleter) -- TODO: should complete to filename, needs meta info
+    [ ("name:", nameCompleter) -- TODO: should complete to filename, needs meta info
     , ("version:", noopCompleter)
     , ("build-type:", constantCompleter ["Simple", "Custom", "Configure", "Make"])
     , ("license:", weightedConstantCompleter licenseNames weightedLicenseNames)
