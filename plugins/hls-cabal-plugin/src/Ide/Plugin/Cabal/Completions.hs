@@ -10,10 +10,10 @@ import qualified Data.List                            as List
 import           Data.Map                             (Map)
 import qualified Data.Map                             as Map
 import           Data.Maybe                           (fromMaybe)
+import           Data.Ord                             (Down (..))
 import qualified Data.Text                            as T
 import           Data.Text.Utf16.Rope                 (Rope)
 import qualified Data.Text.Utf16.Rope                 as Rope
-import           Debug.Trace                          (traceShowM)
 import           Development.IDE                      as D
 import           Distribution.CabalSpecVersion        (CabalSpecVersion (CabalSpecV2_2),
                                                        showCabalSpecVersion)
@@ -26,7 +26,6 @@ import qualified Language.LSP.Protocol.Types          as Compls (CompletionItem 
 import qualified Language.LSP.Protocol.Types          as LSP
 import qualified Language.LSP.VFS                     as VFS
 import qualified Text.Fuzzy.Parallel                  as Fuzzy
-import Data.Ord (Down(..))
 
 -- ----------------------------------------------------------------
 -- Public API for Completions
@@ -76,30 +75,30 @@ contextToCompleter (Stanza s, KeyWord kw) =
   TODO: first line can only have cabal-version: keyword
 -}
 getContext :: (MonadIO m) => Recorder (WithPriority Log) -> CabalPrefixInfo -> Rope -> MaybeT m Context
-getContext recorder ctx ls =
+getContext recorder prefInfo ls =
   case prevLinesM of
     Just prevLines -> do
       let lvlContext =
-            if pos ^. JL.character == 0
+            if completionIndentation prefInfo  == 0
               then TopLevel
               else currentLevel prevLines
       case lvlContext of
         TopLevel -> do
-          kwContext <- MaybeT . pure $ getKeyWordContext ctx prevLines (cabalVersionKeyword <> cabalKeywords)
+          kwContext <- MaybeT . pure $ getKeyWordContext prefInfo prevLines (cabalVersionKeyword <> cabalKeywords)
           pure (TopLevel, kwContext)
         Stanza s ->
           case Map.lookup s stanzaKeywordMap of
             Nothing -> do
               pure (Stanza s, None)
             Just m -> do
-              kwContext <- MaybeT . pure $ getKeyWordContext ctx prevLines m
+              kwContext <- MaybeT . pure $ getKeyWordContext prefInfo prevLines m
               pure (Stanza s, kwContext)
     Nothing -> do
       logWith recorder Warning $ LogFileSplitError pos
       -- basically returns nothing
       fail "Abort computation"
  where
-  pos = completionCursorPosition ctx
+  pos = completionCursorPosition prefInfo
   prevLinesM = splitAtPosition pos ls
 
 -- ----------------------------------------------------------------
@@ -112,13 +111,13 @@ getContext recorder ctx ls =
   previously written keyword matches one in the map.
 -}
 getKeyWordContext :: CabalPrefixInfo -> [T.Text] -> Map KeyWordName a -> Maybe KeyWordContext
-getKeyWordContext ctx ls keywords = do
+getKeyWordContext prefInfo ls keywords = do
   case lastNonEmptyLineM of
     Nothing -> Just None
     Just lastLine' -> do
       let (whiteSpaces, lastLine) = T.span (== ' ') lastLine'
       let keywordIndentation = T.length whiteSpaces
-      let cursorIndentation = fromIntegral (pos ^. JL.character) - (T.length $ completionPrefix ctx)
+      let cursorIndentation = completionIndentation prefInfo
       -- in order to be in a keyword context the cursor needs
       -- to be indented more than the keyword
       if cursorIndentation > keywordIndentation
@@ -128,7 +127,6 @@ getKeyWordContext ctx ls keywords = do
           Just kw -> Just $ KeyWord kw
         else Just None
  where
-  pos = completionCursorPosition ctx
   lastNonEmptyLineM :: Maybe T.Text
   lastNonEmptyLineM = do
     (curLine, rest) <- List.uncons ls
@@ -221,6 +219,12 @@ getCabalPrefixInfo dir prefixInfo =
   -- if the filepath is inside apostrophes, we parse until the apostrophe,
   -- otherwise we parse until a space occurs
   stopConditionChars = apostropheOrSpaceSeparator : [',', ':']
+
+
+completionIndentation :: CabalPrefixInfo -> Int
+completionIndentation prefInfo = fromIntegral (pos ^. JL.character) - (T.length $ completionPrefix prefInfo)
+  where
+    pos = completionCursorPosition prefInfo
 
 mkCompletionItem :: CabalCompletionItem -> LSP.CompletionItem
 mkCompletionItem completionItem =

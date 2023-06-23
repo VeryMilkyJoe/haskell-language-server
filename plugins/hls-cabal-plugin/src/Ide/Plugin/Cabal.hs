@@ -284,11 +284,12 @@ completion recorder _ide _ complParams = do
   let (TextDocumentIdentifier uri) = complParams ^. JL.textDocument
       position = complParams ^. JL.position
   contents <- getVirtualFile $ toNormalizedUri uri
-  fmap (Right . InL) $ case (contents, uriToFilePath' uri) of
+  case (contents, uriToFilePath' uri) of
     (Just cnts, Just path) -> do
       pref <- VFS.getCompletionPrefix position cnts
-      liftIO $ result pref path cnts
-    _ -> return []
+      let res = result pref path cnts
+      liftIO $ fmap (Right . InL) res
+    _ -> pure . Right . InR $ InR Null
  where
   result :: Maybe VFS.PosPrefixInfo -> FilePath -> VFS.VirtualFile -> IO [CompletionItem]
   result Nothing _ _ = pure []
