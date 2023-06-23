@@ -35,7 +35,6 @@ import qualified Language.LSP.VFS                     as VFS
 import qualified System.FilePath                      as FP
 import qualified Text.Fuzzy.Parallel                  as Fuzzy
 
-
 -- ----------------------------------------------------------------
 -- Public API for Completions
 -- ----------------------------------------------------------------
