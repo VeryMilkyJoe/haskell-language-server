@@ -1,17 +1,25 @@
+{-# LANGUAGE DeriveGeneric       #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeFamilies        #-}
 
 module Ide.Plugin.Cabal.Types where
 
-import qualified Data.Text       as T
-import           Development.IDE as D
+import           Control.DeepSeq        (NFData)
+import           Data.Hashable
+import qualified Data.Text              as T
+import           Data.Typeable
+import           Development.IDE        as D
+import           GHC.Generics
+import qualified Ide.Plugin.Cabal.Parse as Parse
 
 data Log
   = LogFileSplitError Position
   | LogUnknownKeyWordInContextError KeyWordName
   | LogUnknownStanzaNameInContextError StanzaName
   | LogFilePathCompleterIOError FilePath IOError
+  | LogUseWithStaleFastNoResult
   deriving (Show)
 
 instance Pretty Log where
@@ -23,11 +31,26 @@ instance Pretty Log where
       "Lookup failed for:" <+> viaShow sn
     LogFilePathCompleterIOError fp ioErr ->
       "Filepath:" <+> viaShow fp <+> viaShow ioErr
+    LogUseWithStaleFastNoResult -> "Package description couldn't be read"
+
+data ParseCabal = ParseCabal
+  deriving (Eq, Show, Typeable, Generic)
+instance Hashable ParseCabal
+instance NFData ParseCabal
+
+type instance RuleResult ParseCabal = Parse.GenericPackageDescription
+
 
 {- | Takes information needed to build possible completion items
 and returns the list of possible completion items
 -}
-type Completer = Recorder (WithPriority Log) -> CabalPrefixInfo -> IO [CabalCompletionItem]
+type Completer = Recorder (WithPriority Log) -> CompleterData -> IO [CabalCompletionItem]
+
+data CompleterData = CompleterData
+  { ideState        :: IdeState
+  , cabalPrefixInfo :: CabalPrefixInfo
+  , stanzaName      :: Maybe StanzaName
+  }
 
 -- | Contains information needed for a completion action
 data CabalCompletionItem = CabalCompletionItem
@@ -53,7 +76,7 @@ data StanzaContext
     TopLevel
   | -- | Nested context in a cabal file, such as 'library',
     -- which has nested keywords, specific to the stanza
-    Stanza StanzaName
+    Stanza StanzaType (Maybe StanzaName)
   deriving (Eq, Show, Read)
 
 {- | Keyword context in cabal file
@@ -71,6 +94,7 @@ data KeyWordContext
 
 type KeyWordName = T.Text
 type StanzaName = T.Text
+type StanzaType = T.Text
 
 {- | Information about the current completion status
 
@@ -105,5 +129,6 @@ data CabalPrefixInfo = CabalPrefixInfo
   -- ^ range where completion is to be inserted
   , completionWorkingDir     :: FilePath
   -- ^ filepath of the handled cabal file
+  , normalizedCabalFilePath  :: NormalizedFilePath
   }
   deriving (Eq, Show)

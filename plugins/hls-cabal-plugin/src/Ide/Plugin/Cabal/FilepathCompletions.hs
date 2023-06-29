@@ -1,17 +1,23 @@
 {-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Ide.Plugin.Cabal.FilepathCompletions where
 
 import           Control.Exception            (evaluate, try)
 import           Control.Monad                (filterM)
+import           Control.Monad.Extra          (concatForM, forM)
+import           Data.List                    (stripPrefix)
+import           Data.Maybe                   (fromMaybe)
 import qualified Data.Text                    as T
 import           Development.IDE.Types.Logger
 import           Ide.Plugin.Cabal.Types
 import           System.Directory             (doesDirectoryExist,
                                                doesFileExist, listDirectory)
 import qualified System.FilePath              as FP
+import           System.FilePath              (dropExtension)
 import qualified System.FilePath.Posix        as Posix
+import qualified Text.Fuzzy.Parallel          as Fuzzy
 
 {- Note [Using correct file path separators]
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -79,8 +85,8 @@ listDirectoryCompletions recorder complInfo = do
   filepaths <- listFileCompletions recorder complInfo
   filterM (doesDirectoryExist . mkDirFromCWD complInfo) filepaths
 
-pathCompletionInfoFromCompletionContext :: CabalPrefixInfo -> PathCompletionInfo
-pathCompletionInfoFromCompletionContext ctx =
+pathCompletionInfoFromCabalPrefixInfo :: CabalPrefixInfo -> PathCompletionInfo
+pathCompletionInfoFromCabalPrefixInfo ctx =
   PathCompletionInfo
     { partialFileName = dirNamePrefix
     , partialFileDir = Posix.addTrailingPathSeparator $ Posix.takeDirectory prefix
@@ -89,7 +95,54 @@ pathCompletionInfoFromCompletionContext ctx =
  where
   prefix = T.unpack $ completionPrefix ctx
   dirNamePrefix = T.pack $ Posix.takeFileName prefix
-  dir = Posix.takeDirectory $ completionWorkingDir ctx
+  dir = completionWorkingDir ctx
+
+{- | Extracts the source dirs from the library stanza in the cabal file using the GPD
+  and returns a list of path completions relative to any source dir  which fit the passed prefix info.
+-}
+filePathsForExposedModules :: [FilePath] -> Recorder (WithPriority Log) -> CabalPrefixInfo -> IO [T.Text]
+filePathsForExposedModules srcDirs recorder prefInfo = do
+      concatForM
+        srcDirs
+        (\dir -> do
+          let pInfo =
+                PathCompletionInfo
+                { partialFileName = T.pack $ Posix.takeFileName prefix
+                , partialFileDir =  Posix.addTrailingPathSeparator $ Posix.takeDirectory prefix
+                , workingDir = completionWorkingDir prefInfo FP.</> dir
+                }
+          completions <- listFileCompletions recorder pInfo
+          validExposedCompletions <- filterM (isValidExposedModulePath pInfo) completions
+          let filePathCompletions = map (fpToExposedModulePath dir) validExposedCompletions
+              toMatch = fromMaybe (partialFileName pInfo) $ T.stripPrefix "./" $ partialFileName pInfo
+              scored = Fuzzy.simpleFilter 1000 10 toMatch (map T.pack filePathCompletions)
+          forM
+            scored
+            ( \compl' -> do
+                let compl = Fuzzy.original compl'
+                fullFilePath <- mkExposedModulePathCompletion compl pInfo
+                pure fullFilePath
+            )
+        )
+  where
+    prefix =
+        exposedModulePathToFp
+        $ completionPrefix prefInfo
+    isValidExposedModulePath :: PathCompletionInfo -> FilePath -> IO Bool
+    isValidExposedModulePath pInfo path = do
+      let dir = mkCompletionDirectory pInfo
+      fileExists <- doesFileExist (dir FP.</> path)
+      pure $ not fileExists || FP.isExtensionOf ".hs" path
+
+
+fpToExposedModulePath :: FilePath -> FilePath -> FilePath
+fpToExposedModulePath srcDir fp' = T.unpack $ T.intercalate "." $ fmap T.pack $  FP.splitDirectories fp
+  where
+    fp = fromMaybe fp' $ stripPrefix srcDir fp'
+
+exposedModulePathToFp :: T.Text -> FilePath
+exposedModulePathToFp fp = T.unpack $ T.replace "." (T.singleton FP.pathSeparator) fp
+
 
 {- | Returns the directory, the currently handled cabal file is in.
 
@@ -125,7 +178,7 @@ mkPathCompletion complInfo completion =
     partialFileDir complInfo Posix.</> T.unpack completion
 
 {-   Takes a suffix, a completed path and a pathCompletionInfo and
-   generates the whole filepath including the already written prefix
+   generates the whole filepath including the already written prefix,
    and the suffix in case the completed path is a filepath.
 -}
 mkFilePathCompletion :: T.Text -> T.Text -> PathCompletionInfo -> IO T.Text
@@ -134,3 +187,17 @@ mkFilePathCompletion suffix completion complInfo = do
   isFilePath <- doesFileExist combinedPath
   let completedPath = if isFilePath then combinedPath ++ T.unpack suffix else combinedPath
   pure $ T.pack completedPath
+
+{- Takes a completed path and a pathCompletionInfo and generates the whole completed
+  filepath including the already written prefix using the cabal syntax for exposed modules.
+
+  i.e. Dir.Dir2.HaskellFile
+  or   Dir.Dir2.
+-}
+mkExposedModulePathCompletion :: T.Text -> PathCompletionInfo -> IO T.Text
+mkExposedModulePathCompletion completion complInfo = do
+  let combinedPath = T.unpack $ mkPathCompletion complInfo completion
+  isFilePath <- doesFileExist (workingDir complInfo FP.</> combinedPath)
+  let completedPath = T.pack $ if isFilePath then dropExtension combinedPath else combinedPath ++ "."
+  let exposedPath = fromMaybe completedPath $ T.stripPrefix "./" completedPath
+  pure $ T.pack $ fpToExposedModulePath "" $ T.unpack exposedPath

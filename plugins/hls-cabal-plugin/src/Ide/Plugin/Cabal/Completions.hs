@@ -1,8 +1,10 @@
 {-# LANGUAGE OverloadedStrings   #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections       #-}
 
 module Ide.Plugin.Cabal.Completions where
 
+import           Control.Applicative                  (asum)
 import           Control.Monad                        (forM)
 import           Control.Monad.IO.Class               (MonadIO)
 import           Control.Monad.Trans.Maybe
@@ -18,6 +20,11 @@ import           Development.IDE                      as D
 import           Distribution.CabalSpecVersion        (CabalSpecVersion (CabalSpecV2_2),
                                                        showCabalSpecVersion)
 import           Distribution.Compat.Lens             ((^.))
+import           Distribution.PackageDescription      (GenericPackageDescription (..),
+                                                       Library (libBuildInfo),
+                                                       hsSourceDirs)
+import           Distribution.Types.CondTree          (CondTree (condTreeData))
+import           Distribution.Utils.Path              (getSymbolicPath)
 import           Ide.Plugin.Cabal.FilepathCompletions
 import           Ide.Plugin.Cabal.LicenseSuggest      (licenseNames)
 import           Ide.Plugin.Cabal.Types
@@ -25,7 +32,9 @@ import qualified Language.LSP.Protocol.Lens           as JL
 import qualified Language.LSP.Protocol.Types          as Compls (CompletionItem (..))
 import qualified Language.LSP.Protocol.Types          as LSP
 import qualified Language.LSP.VFS                     as VFS
+import qualified System.FilePath                      as FP
 import qualified Text.Fuzzy.Parallel                  as Fuzzy
+
 
 -- ----------------------------------------------------------------
 -- Public API for Completions
@@ -44,28 +53,28 @@ contextToCompleter (TopLevel, None) =
 -- we look up that keyword in the top level context and can complete its possible values
 contextToCompleter (TopLevel, KeyWord kw) =
   case Map.lookup kw (cabalVersionKeyword <> cabalKeywords) of
-    Nothing -> \recorder b -> do
+    Nothing -> \recorder cData -> do
       logWith recorder Warning $ LogUnknownKeyWordInContextError kw
-      noopCompleter recorder b
+      noopCompleter recorder cData
     Just l -> l
 -- if we are in a stanza and not in a keyword context,
 -- we can write any of the stanza's keywords or a stanza declaration
-contextToCompleter (Stanza s, None) =
+contextToCompleter (Stanza s _, None) =
   case Map.lookup s stanzaKeywordMap of
-    Nothing -> \recorder b -> do
+    Nothing -> \recorder cData -> do
       logWith recorder Warning $ LogUnknownStanzaNameInContextError s
-      noopCompleter recorder b
+      noopCompleter recorder cData
     Just l -> constantCompleter $ Map.keys l ++ Map.keys stanzaKeywordMap
 -- if we are in a stanza's keyword's context we can complete possible values of that keyword
-contextToCompleter (Stanza s, KeyWord kw) =
+contextToCompleter (Stanza s _, KeyWord kw) =
   case Map.lookup s stanzaKeywordMap of
-    Nothing -> \recorder b -> do
+    Nothing -> \recorder cData -> do
       logWith recorder Warning $ LogUnknownStanzaNameInContextError s
-      noopCompleter recorder b
+      noopCompleter recorder cData
     Just m -> case Map.lookup kw m of
-      Nothing -> \recorder b -> do
+      Nothing -> \recorder cData -> do
         logWith recorder Warning $ LogUnknownKeyWordInContextError kw
-        noopCompleter recorder b
+        noopCompleter recorder cData
       Just l -> l
 
 {- | Takes prefix info about the previously written text
@@ -86,13 +95,13 @@ getContext recorder prefInfo ls =
         TopLevel -> do
           kwContext <- MaybeT . pure $ getKeyWordContext prefInfo prevLines (cabalVersionKeyword <> cabalKeywords)
           pure (TopLevel, kwContext)
-        Stanza s ->
+        Stanza s n ->
           case Map.lookup s stanzaKeywordMap of
             Nothing -> do
-              pure (Stanza s, None)
+              pure (Stanza s n, None)
             Just m -> do
               kwContext <- MaybeT . pure $ getKeyWordContext prefInfo prevLines m
-              pure (Stanza s, kwContext)
+              pure (Stanza s n, kwContext)
     Nothing -> do
       logWith recorder Warning $ LogFileSplitError pos
       -- basically returns nothing
@@ -143,10 +152,19 @@ getKeyWordContext prefInfo ls keywords = do
 currentLevel :: [T.Text] -> StanzaContext
 currentLevel [] = TopLevel
 currentLevel (cur : xs)
-  | Just s <- stanza = Stanza s
+  | Just (s, n) <- stanza = Stanza s n
   | otherwise = currentLevel xs
  where
-  stanza = List.find (`T.isPrefixOf` cur) (Map.keys stanzaKeywordMap)
+  stanza = asum $ map checkStanza (Map.keys stanzaKeywordMap)
+  checkStanza :: StanzaType -> Maybe (StanzaType, Maybe StanzaName)
+  checkStanza t =
+    case T.stripPrefix t (T.strip cur) of
+      Just n
+        | T.null n -> Just (t,Nothing)
+        | otherwise -> Just (t, Just $ T.strip n)
+      Nothing -> Nothing
+
+
 
 {- | Returns a CabalCompletionItem with the given starting position
   and text to be inserted, where the displayed text is the same as the
@@ -193,20 +211,21 @@ stripPartiallyWritten = T.dropWhileEnd (\y -> (y /= ' ') && (y /= ':'))
 getCabalPrefixInfo :: FilePath -> VFS.PosPrefixInfo -> CabalPrefixInfo
 getCabalPrefixInfo dir prefixInfo =
   CabalPrefixInfo
-    { completionPrefix = filepathPrefix
+    { completionPrefix = completionPrefix'
     , completionSuffix = Just suffix
     , completionCursorPosition = VFS.cursorPos prefixInfo
     , completionRange = Range completionStart completionEnd
-    , completionWorkingDir = dir
+    , completionWorkingDir = FP.takeDirectory dir
+    , normalizedCabalFilePath = LSP.toNormalizedFilePath dir
     }
  where
   completionEnd = VFS.cursorPos prefixInfo
   completionStart =
     Position
       (_line completionEnd)
-      (_character completionEnd - (fromIntegral $ T.length filepathPrefix))
+      (_character completionEnd - (fromIntegral $ T.length completionPrefix'))
   (beforeCursorText, afterCursorText) = T.splitAt cursorColumn $ VFS.fullLine prefixInfo
-  filepathPrefix = T.takeWhileEnd (not . (`elem` stopConditionChars)) beforeCursorText
+  completionPrefix' = T.takeWhileEnd (not . (`elem` stopConditionChars)) beforeCursorText
   suffix =
     if apostropheOrSpaceSeparator == '\"' && even (T.count "\"" afterCursorText)
       then "\""
@@ -266,20 +285,29 @@ noopCompleter _ _ = pure []
   can be completed for a field
 -}
 constantCompleter :: [T.Text] -> Completer
-constantCompleter completions _ ctxInfo = do
-  let scored = Fuzzy.simpleFilter 1000 10 (completionPrefix ctxInfo) completions
-  let range = completionRange ctxInfo
+constantCompleter completions _ cData  = do
+  let prefInfo = cabalPrefixInfo cData
+      scored = Fuzzy.simpleFilter 1000 10 (completionPrefix prefInfo) completions
+      range = completionRange prefInfo
   pure $ map (makeSimpleCabalCompletionItem range . Fuzzy.original) scored
 
+{- | Completer to be used when a set of values with priority weights
+ attached to some values are to be completed for a field. The higher the weight,
+ the higher the priority to show the value in the completion suggestion.
+ If the value does not occur in the weighted map its weight is defaulted
+ to zero.
+-}
 weightedConstantCompleter :: [T.Text] -> Map T.Text Double -> Completer
-weightedConstantCompleter completions weights  _ ctxInfo = do
+weightedConstantCompleter completions weights _ cData = do
   let scored = if perfectScore > 0
                 then fmap Fuzzy.original $ Fuzzy.simpleFilter' 1000 10 prefix completions customMatch
                 else topTenByWeight
-  let range = completionRange ctxInfo
+      range = completionRange prefInfo
   pure $ map (makeSimpleCabalCompletionItem range) scored
   where
-    prefix = completionPrefix ctxInfo
+    prefInfo = cabalPrefixInfo cData
+    prefix = completionPrefix prefInfo
+    -- this should never return Nothing since we match the word with itself
     perfectScore = fromMaybe (error "match is broken") $ Fuzzy.match prefix prefix
     customMatch :: (T.Text -> T.Text -> Maybe Int)
     customMatch toSearch searchSpace = do
@@ -297,9 +325,10 @@ weightedConstantCompleter completions weights  _ ctxInfo = do
   Completes file paths as well as directories.
 -}
 filePathCompleter :: Completer
-filePathCompleter recorder ctx = do
-  let suffix = fromMaybe "" $ completionSuffix ctx
-      complInfo = pathCompletionInfoFromCompletionContext ctx
+filePathCompleter recorder cData = do
+  let prefInfo = cabalPrefixInfo cData
+      suffix = fromMaybe "" $ completionSuffix prefInfo
+      complInfo = pathCompletionInfoFromCabalPrefixInfo prefInfo
       toMatch = fromMaybe (partialFileName complInfo) $ T.stripPrefix "./" $ partialFileName complInfo
   filePathCompletions <- listFileCompletions recorder complInfo
   let scored = Fuzzy.simpleFilter 1000 10 toMatch (map T.pack filePathCompletions)
@@ -308,16 +337,55 @@ filePathCompleter recorder ctx = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         fullFilePath <- mkFilePathCompletion suffix compl complInfo
-        pure $ mkCabalCompletionItem (completionRange ctx) fullFilePath fullFilePath
+        pure $ mkCabalCompletionItem (completionRange prefInfo) fullFilePath fullFilePath
     )
+
+{- | Completer to be used when module paths can be completed for the field.
+-}
+modulesCompleter :: (GenericPackageDescription -> [FilePath]) -> Completer
+modulesCompleter extractionFunction recorder cData = do
+  maybeGpd <- runIdeAction "cabal-plugin.modulesCompleter.parseCabal" extras
+    $ useWithStaleFast ParseCabal $ normalizedCabalFilePath prefInfo
+  case maybeGpd of
+    Just (gpd, _) -> do
+      let sourceDirs = extractionFunction gpd
+      filePathCompletions <- filePathsForExposedModules sourceDirs recorder prefInfo
+      pure $ map (\compl -> mkCabalCompletionItem (completionRange prefInfo) compl compl) filePathCompletions
+    Nothing -> do
+      logWith recorder Debug LogUseWithStaleFastNoResult
+      pure []
+  where
+    extras = shakeExtras (ideState cData)
+    prefInfo = cabalPrefixInfo cData
+
+exposedModuleExtraction :: GenericPackageDescription -> [FilePath]
+exposedModuleExtraction gpd =
+  -- we use condLibrary to get the information contained in the library stanza
+  -- since the library in PackageDescription is not populated by us
+  case libM of
+    Just lib -> do
+      map getSymbolicPath $ hsSourceDirs $ libBuildInfo $ condTreeData lib
+    Nothing -> []
+  where
+    libM = condLibrary gpd
+
+otherModulesExtraction :: GenericPackageDescription -> [FilePath]
+otherModulesExtraction gpd =
+  case libM of
+    Just lib -> do
+      map getSymbolicPath $ hsSourceDirs $ libBuildInfo $ condTreeData lib
+    Nothing -> []
+  where
+    libM = condLibrary gpd
 
 {- | Completer to be used when a directory can be completed for the field,
   takes the file path of the directory to start from.
   Only completes directories.
 -}
 directoryCompleter :: Completer
-directoryCompleter recorder ctx = do
-  let complInfo = pathCompletionInfoFromCompletionContext ctx
+directoryCompleter recorder cData = do
+  let prefInfo = cabalPrefixInfo cData
+      complInfo = pathCompletionInfoFromCabalPrefixInfo prefInfo
   directoryCompletions <- listDirectoryCompletions recorder complInfo
   let scored =
         Fuzzy.simpleFilter
@@ -330,7 +398,7 @@ directoryCompleter recorder ctx = do
     ( \compl' -> do
         let compl = Fuzzy.original compl'
         let fullDirPath = mkPathCompletion complInfo compl
-        pure $ mkCabalCompletionItem (completionRange ctx) fullDirPath fullDirPath
+        pure $ mkCabalCompletionItem (completionRange prefInfo) fullDirPath fullDirPath
     )
 
 -- ----------------------------------------------------------------
@@ -382,7 +450,7 @@ stanzaKeywordMap =
     [
       ( "library"
       , Map.fromList $
-          [ ("exposed-modules:", noopCompleter) -- identifier list
+          [ ("exposed-modules:", modulesCompleter exposedModuleExtraction) -- identifier list
           , ("virtual-modules:", noopCompleter)
           , ("exposed:", constantCompleter ["True", "False"])
           , ("visibility:", constantCompleter ["private", "public"])

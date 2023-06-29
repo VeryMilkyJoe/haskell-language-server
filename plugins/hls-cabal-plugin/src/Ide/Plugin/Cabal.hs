@@ -41,6 +41,7 @@ import qualified Language.LSP.Protocol.Message   as LSP
 import           Language.LSP.Protocol.Types
 import           Language.LSP.Server             (LspM, getVirtualFile)
 import qualified Language.LSP.VFS                as VFS
+import System.FilePath (takeDirectory)
 
 data Log
   = LogModificationTime NormalizedFilePath FileVersion
@@ -137,19 +138,12 @@ restartCabalShakeSession shakeExtras vfs file actionMsg = do
 -- Plugin Rules
 -- ----------------------------------------------------------------
 
-data ParseCabal = ParseCabal
-  deriving (Eq, Show, Typeable, Generic)
-instance Hashable ParseCabal
-instance NFData ParseCabal
-
-type instance RuleResult ParseCabal = ()
-
 cabalRules :: Recorder (WithPriority Log) -> Rules ()
 cabalRules recorder = do
   -- Make sure we initialise the cabal files-of-interest.
   ofInterestRules recorder
   -- Rule to produce diagnostics for cabal files.
-  define (cmapWithPrio LogShake recorder) $ \ParseCabal file -> do
+  define (cmapWithPrio LogShake recorder) $ \Types.ParseCabal file -> do
     -- whenever this key is marked as dirty (e.g., when a user writes stuff to it),
     -- we rerun this rule because this rule *depends* on GetModificationTime.
     (t, mCabalSource) <- use_ GetFileContents file
@@ -167,8 +161,8 @@ cabalRules recorder = do
         let errorDiags = NE.toList $ NE.map (Diagnostics.errorDiagnostic file) pErrorNE
             allDiags = errorDiags <> warningDiags
         pure (allDiags, Nothing)
-      Right _ -> do
-        pure (warningDiags, Just ())
+      Right gpd -> do
+        pure (warningDiags, Just gpd)
 
   action $ do
     -- Run the cabal kick. This code always runs when 'shakeRestart' is run.
@@ -188,7 +182,7 @@ function invocation.
 kick :: Action ()
 kick = do
   files <- HashMap.keys <$> getCabalFilesOfInterestUntracked
-  void $ uses ParseCabal files
+  void $ uses Types.ParseCabal files
 
 -- ----------------------------------------------------------------
 -- Code Actions
@@ -280,7 +274,7 @@ deleteFileOfInterest recorder state f = do
 -- ----------------------------------------------------------------
 
 completion :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState 'LSP.Method_TextDocumentCompletion
-completion recorder _ide _ complParams = do
+completion recorder ide _ complParams = do
   let (TextDocumentIdentifier uri) = complParams ^. JL.textDocument
       position = complParams ^. JL.position
   contents <- getVirtualFile $ toNormalizedUri uri
@@ -299,7 +293,15 @@ completion recorder _ide _ complParams = do
       Just ctx -> do
         logWith recorder Debug $ LogCompletionContext ctx pos
         let completer = Completions.contextToCompleter ctx
-        completions <- completer completerRecorder completionContext
+        let completerData = Types.CompleterData
+              { ideState = ide
+              , cabalPrefixInfo = completionContext
+              , stanzaName =
+                case fst ctx of
+                  Types.Stanza _ name -> name
+                  _ -> Nothing
+              }
+        completions <- completer completerRecorder completerData
         pure $ map Completions.mkCompletionItem completions
    where
     completerRecorder = cmapWithPrio LogCompletions recorder

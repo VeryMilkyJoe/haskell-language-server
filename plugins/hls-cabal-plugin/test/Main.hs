@@ -41,6 +41,7 @@ main = do
             "Cabal Plugin Tests"
             [ unitTests
             , pluginTests
+            , exposedModulesTests
             ]
 
 -- ------------------------------------------------------------------------
@@ -198,7 +199,7 @@ pathCompleterTests =
                             , partialFileDir = ""
                             , workingDir = testDir
                             }
-                sort compls @?= [".hidden", "dir1/", "dir2/", "textfile.txt"]
+                compls @?== [".hidden", "Content.hs", "dir1/", "dir2/", "textfile.txt"]
             , testCase "In directory" $ do
                 testDir <- getTestDir
                 compls <-
@@ -209,53 +210,40 @@ pathCompleterTests =
                             , partialFileDir = "dir1/"
                             , workingDir = testDir
                             }
-                sort compls @?= ["f1.txt", "f2.hs"]
+                compls @?== ["f1.txt", "f2.hs"]
             ]
         ]
   where
-    simpleCabalPrefixInfo :: T.Text -> FilePath -> CabalPrefixInfo
-    simpleCabalPrefixInfo prefix fp =
-        CabalPrefixInfo
-            { completionPrefix = prefix
-            , completionSuffix = Nothing
-            , completionCursorPosition = Position 0 0
-            , completionRange = Range (Position 0 0) (Position 0 0)
-            , completionWorkingDir = fp </> "test.cabal"
-            }
-    getTestDir :: IO FilePath
-    getTestDir = do
-        cwd <- getCurrentDirectory
-        pure $ cwd </> "test/testdata/filepath-completions/"
     pathCompletionInfoFromCompletionContextTests :: TestTree
     pathCompletionInfoFromCompletionContextTests =
         testGroup
             "Completion Info to Completion Context Tests"
             [ testCase "Current Directory" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "" testDir
+                let complInfo = pathCompletionInfoFromCabalPrefixInfo $ simpleCabalPrefixInfoFromFp "" testDir
                 partialFileDir complInfo @?= "./"
             , testCase "Current Directory - partly written next" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "di" testDir
+                let complInfo = pathCompletionInfoFromCabalPrefixInfo $ simpleCabalPrefixInfoFromFp "di" testDir
                 partialFileDir complInfo @?= "./"
                 partialFileName complInfo @?= "di"
             , testCase "Current Directory - alternative writing" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "./" testDir
+                let complInfo = pathCompletionInfoFromCabalPrefixInfo $ simpleCabalPrefixInfoFromFp "./" testDir
                 partialFileDir complInfo @?= "./"
             , testCase "Subdirectory" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "dir1/" testDir
+                let complInfo = pathCompletionInfoFromCabalPrefixInfo $ simpleCabalPrefixInfoFromFp "dir1/" testDir
                 partialFileDir complInfo @?= "dir1/"
                 partialFileName complInfo @?= ""
             , testCase "Subdirectory - partly written next" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "dir1/d" testDir
+                let complInfo = pathCompletionInfoFromCabalPrefixInfo $ simpleCabalPrefixInfoFromFp "dir1/d" testDir
                 partialFileDir complInfo @?= "dir1/"
                 partialFileName complInfo @?= "d"
             , testCase "Subdirectory - partly written next" $ do
                 testDir <- getTestDir
-                let complInfo = pathCompletionInfoFromCompletionContext $ simpleCabalPrefixInfo "dir1/dir2/d" testDir
+                let complInfo = pathCompletionInfoFromCabalPrefixInfo $ simpleCabalPrefixInfoFromFp "dir1/dir2/d" testDir
                 partialFileDir complInfo @?= "dir1/dir2/"
                 partialFileName complInfo @?= "d"
             ]
@@ -267,41 +255,41 @@ pathCompleterTests =
                 testDir <- getTestDir
                 completions <- completeDirectory "" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./dir1/", "./dir2/"]
+                insertCompletions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - alternative writing" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "./" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./dir1/", "./dir2/"]
+                insertCompletions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - incomplete directory path written" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "di" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./dir1/", "./dir2/"]
+                insertCompletions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - incomplete filepath written" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "te" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= []
+                insertCompletions @?== []
             , testCase "Subdirectory - no more directories found" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "dir1/" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= []
+                insertCompletions @?== []
             , testCase "Subdirectory - available subdirectory" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "dir2/" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["dir2/dir3/"]
+                insertCompletions @?== ["dir2/dir3/"]
             , testCase "Nonexistent directory" $ do
                 testDir <- getTestDir
                 completions <- completeDirectory "dir2/dir4/" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= []
+                insertCompletions @?== []
             ]
       where
         completeDirectory :: T.Text -> TestName -> IO [CabalCompletionItem]
-        completeDirectory written dirName = directoryCompleter mempty $ simpleCabalPrefixInfo written dirName
+        completeDirectory written dirName = directoryCompleter mempty $ mkCompleterData $ simpleCabalPrefixInfoFromFp written dirName
     fileCompleterTests :: TestTree
     fileCompleterTests =
         testGroup
@@ -310,46 +298,48 @@ pathCompleterTests =
                 testDir <- getTestDir
                 completions <- completeFilePath "" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./.hidden", "./dir1/", "./dir2/", "./textfile.txt"]
+                insertCompletions @?== ["./.hidden","./Content.hs", "./dir1/", "./dir2/", "./textfile.txt"]
             , testCase "Current Directory - alternative writing" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "./" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./.hidden", "./dir1/", "./dir2/", "./textfile.txt"]
+                insertCompletions @?== ["./.hidden", "./Content.hs", "./dir1/", "./dir2/", "./textfile.txt"]
             , testCase "Current Directory - hidden file start" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "." testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./.hidden", "./textfile.txt"]
+                insertCompletions @?== ["./Content.hs", "./.hidden", "./textfile.txt"]
             , testCase "Current Directory - incomplete directory path written" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "di" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./dir1/", "./dir2/"]
+                insertCompletions @?== ["./dir1/", "./dir2/"]
             , testCase "Current Directory - incomplete filepath written" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "te" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["./textfile.txt"]
+                insertCompletions @?== ["./Content.hs", "./textfile.txt"]
             , testCase "Subdirectory" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "dir1/" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["dir1/f1.txt", "dir1/f2.hs"]
+                insertCompletions @?== ["dir1/f1.txt", "dir1/f2.hs"]
             , testCase "Subdirectory - incomplete filepath written" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "dir2/dir3/MA" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= ["dir2/dir3/MARKDOWN.md"]
+                insertCompletions @?== ["dir2/dir3/MARKDOWN.md"]
             , testCase "Nonexistent directory" $ do
                 testDir <- getTestDir
                 completions <- completeFilePath "dir2/dir4/" testDir
                 let insertCompletions = map itemInsert completions
-                sort insertCompletions @?= []
+                insertCompletions @?== []
             ]
       where
         completeFilePath :: T.Text -> TestName -> IO [CabalCompletionItem]
-        completeFilePath written dirName = filePathCompleter mempty $ simpleCabalPrefixInfo written dirName
+        completeFilePath written dirName = filePathCompleter mempty $ mkCompleterData $ simpleCabalPrefixInfoFromFp written dirName
+mkCompleterData :: CabalPrefixInfo -> CompleterData
+mkCompleterData prefInfo = CompleterData {ideState = undefined, cabalPrefixInfo = prefInfo, stanzaName = Nothing}
 contextTests :: TestTree
 contextTests =
     testGroup
@@ -391,12 +381,12 @@ contextTests =
             -- on a file, where the library stanza has been defined
             -- but no keyword is defined afterwards, the stanza context should be recognized
             ctx <- callGetContext (Position 3 2) "" libraryStanzaData
-            ctx @?= (Stanza "library", None)
+            ctx @?= (Stanza "library" Nothing, None)
         , testCase "Inside Stanza - keyword, no value" $ do
             -- on a file, where the library stanza and a keyword
             -- has been defined, the keyword and stanza should be recognized
             ctx <- callGetContext (Position 4 21) "" libraryStanzaData
-            ctx @?= (Stanza "library", KeyWord "build-depends:")
+            ctx @?= (Stanza "library" Nothing, KeyWord "build-depends:")
         , expectFailBecause "While not valid, it is not that important to make the code more complicated for this" $
             testCase "Cabal version keyword - no value, next line" $ do
                 -- if the cabal version keyword has been written but without a value,
@@ -431,13 +421,13 @@ contextTests =
             -- in a stanza context with no value, then the value may be written in the next line,
             -- when the cursor is indented more than the keyword
             ctx <- callGetContext (Position 5 8) "" libraryStanzaData
-            ctx @?= (Stanza "library", KeyWord "build-depends:")
+            ctx @?= (Stanza "library" Nothing, KeyWord "build-depends:")
         , testCase "Keyword inside stanza - cursor indented less than keyword in next line" $ do
             -- if a keyword, other than the cabal version keyword has been written
             -- in a stanza context with no value, then the value may not be written in the next line,
             -- when the cursor is indented less than the keyword
             ctx <- callGetContext (Position 5 2) "" libraryStanzaData
-            ctx @?= (Stanza "library", None)
+            ctx @?= (Stanza "library" Nothing, None)
         , testCase "Keyword inside stanza - cursor at start of next line" $ do
             -- in a stanza context with no value the value may not be written in the next line,
             -- when the cursor is not indented and we are in the top level context
@@ -446,26 +436,43 @@ contextTests =
         , testCase "Top level - cursor in later line with partially written value" $ do
             ctx <- callGetContext (Position 5 13)  "eee" topLevelData
             ctx @?= (TopLevel, KeyWord "name:")
+        , testCase "Named Stanza" $ do
+            ctx <- callGetContext (Position 2 18)  "" executableStanzaData
+            ctx @?= (Stanza "executable" (Just "exeName"), None)
         ]
   where
     callGetContext :: Position -> T.Text -> [T.Text] -> IO Context
     callGetContext pos pref ls = do
-        runMaybeT (getContext mempty (simpleCabalPrefixInfo pos pref) (Rope.fromText $ T.unlines ls))
+        runMaybeT (getContext mempty (simpleCabalPrefixInfoFromPos pos pref) (Rope.fromText $ T.unlines ls))
             >>= \case
                 Nothing -> assertFailure "Context must be found"
                 Just ctx -> pure ctx
 
-    simpleCabalPrefixInfo :: Position -> T.Text -> CabalPrefixInfo
-    simpleCabalPrefixInfo pos prefix =
-        CabalPrefixInfo
-            { completionPrefix = prefix
-            , completionSuffix = Nothing
-            , completionCursorPosition = pos
-            , completionRange = Range pos (Position 0 0)
-            , completionWorkingDir = ""
-            }
+exposedModulesTests :: TestTree
+exposedModulesTests =
+    testGroup
+        "Filepaths for Exposed Modules Tests"
+        [ testCase "Root dir" $ do
+            exposed <- callFilePathsForExposedModules ["./"]
+            exposed @?== ["Dir1.", "file1"]
+        , testCase "Nested path" $ do
+            exposed <- callFilePathsForExposedModules ["./Dir1/Dir2/"]
+            exposed @?== ["Dir4.", "file2"]
+        , testCase "Nested empty dir" $ do
+            exposed <- callFilePathsForExposedModules ["./Dir1/Dir2/Dir4"]
+            exposed @?== []
+        , testCase "Two dirs" $ do
+            exposed <- callFilePathsForExposedModules ["./Dir1/", "Dir1/Dir3/Dir4/"]
+            exposed @?== ["Dir2.", "Dir3.", "file3"]
+        ]
+    where
+        callFilePathsForExposedModules :: [FilePath] -> IO [T.Text]
+        callFilePathsForExposedModules srcDirs = do
+            cwd <- getExposedTestDir
+            let prefInfo = simpleCabalPrefixInfoFromFp "" cwd
+            filePathsForExposedModules srcDirs mempty prefInfo
 
--- ------------------------------------------------------------------------
+-- ------------------------ ------------------------------------------------
 -- Integration Tests
 -- ------------------------------------------------------------------------
 
@@ -598,6 +605,44 @@ runCabalSession subdir =
 testDataDir :: FilePath
 testDataDir = "test" </> "testdata"
 
+---------------------------------------------------------------------
+-- Helper Functions
+---------------------------------------------------------------------
+simpleCabalPrefixInfoFromPos :: Position -> T.Text -> CabalPrefixInfo
+simpleCabalPrefixInfoFromPos pos prefix =
+    CabalPrefixInfo
+        { completionPrefix = prefix
+        , completionSuffix = Nothing
+        , completionCursorPosition = pos
+        , completionRange = Range pos (Position 0 0)
+        , completionWorkingDir = ""
+        , normalizedCabalFilePath = ""
+        }
+simpleCabalPrefixInfoFromFp :: T.Text -> FilePath -> CabalPrefixInfo
+simpleCabalPrefixInfoFromFp prefix fp =
+    CabalPrefixInfo
+        { completionPrefix = prefix
+        , completionSuffix = Nothing
+        , completionCursorPosition = Position 0 0
+        , completionRange = Range (Position 0 0) (Position 0 0)
+        , completionWorkingDir = fp
+        , normalizedCabalFilePath = ""
+        }
+
+getTestDir :: IO FilePath
+getTestDir = do
+    cwd <- getCurrentDirectory
+    pure $ cwd </> "test/testdata/filepath-completions/"
+
+getExposedTestDir :: IO FilePath
+getExposedTestDir = do
+    cwd <- getCurrentDirectory
+    pure $ cwd </> "test/testdata/src-modules/"
+
+-- | list comparison where the order in the list is irrelevant
+(@?==) :: (Ord a, Show a) => [a] -> [a] -> Assertion
+(@?==) l1 l2 = sort l1 @?= sort l2
+
 -- ------------------------------------------------------------------------
 -- Test Data
 -- ------------------------------------------------------------------------
@@ -610,6 +655,15 @@ libraryStanzaData =
     , "    build-depends:    "
     , "           "
     , "ma  "
+    ]
+
+executableStanzaData :: [T.Text]
+executableStanzaData =
+    [ "cabal-version:      3.0"
+    , "name:               simple-cabal"
+    , "executable exeName"
+    , "    default-language: Haskell2010"
+    , "    hs-source-dirs: test/preprocessor"
     ]
 
 topLevelData :: [T.Text]
