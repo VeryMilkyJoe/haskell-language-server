@@ -12,6 +12,7 @@ import           Text.Cabal.Types
 import           Text.Cabal.Value
 import           Text.Megaparsec
 import           Text.Megaparsec.Char
+import           Data.Char            (isSpace)
 
 --------------------------------
 -- Parser
@@ -67,7 +68,7 @@ fieldParser indentation = do
   hspace
   ((kw, vals), fieldLoc) <- annotateSrcLoc $ do
     (keyword, kwLoc) <- annotateSrcLoc $ choice [keywordParser, externalKeywordParser]
-    let valParser = fromMaybe defaultValueParser $ M.lookup keyword allKeywords
+    let valParser = fromMaybe defaultValueParser $ M.lookup (normalize keyword) allKeywords
     values <- valuesParser valParser indentNum
     pure (KeyWord keyword (Annotation Nothing kwLoc), values)
   pure (Just indentNum, Field kw vals (Annotation Nothing fieldLoc))
@@ -79,6 +80,17 @@ fieldParser indentation = do
     prefix <- string' "x-"
     kw <- keywordParser
     pure $ prefix <> kw
+
+  -- Used to normalize the parsed value such that if the keyword
+  -- matches, the lookup will succeed. Previously, the lookup
+  -- required an exact match.
+
+  normalize :: T.Text -> T.Text
+  normalize =
+      (`T.snoc` ':')
+    . T.toLower
+    . T.dropWhileEnd (\u -> isSpace u && u /= '\n' && u /= '\r')
+    . T.dropEnd 1
 
   -- a keyword is some word ending with a colon
   keywordParser :: Parser T.Text
