@@ -81,10 +81,14 @@ fieldParser indentation = do
     kw <- keywordParser
     pure $ prefix <> kw
 
+  -- Used to normalize the parsed value such that if the keyword
+  -- matches, the lookup will succeed. Previously, the lookup
+  -- required an exact match.
+
   normalize :: T.Text -> T.Text
   normalize =
-      T.toLower
-    . (`snoc` ':')
+      (`T.snoc` ':')
+    . T.toLower
     . T.dropWhileEnd (\u -> isSpace u && u /= '\n' && u /= '\r')
     . T.dropEnd 1
 
