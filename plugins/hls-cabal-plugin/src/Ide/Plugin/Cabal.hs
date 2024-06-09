@@ -337,6 +337,9 @@ completion recorder ide _ complParams = do
               { getLatestGPD = do
                 mGPD <- runIdeAction "cabal-plugin.modulesCompleter.gpd" (shakeExtras ide) $ useWithStaleFast ParseCabalFile $ toNormalizedFilePath fp
                 pure $ fmap fst mGPD
+              , getCabalFields = do
+                mFields <- runIdeAction "cabal-plugin.modulesCompleter.fields" (shakeExtras ide) $ useWithStaleFast ParseCabalFields $ toNormalizedFilePath fp
+                pure $ fmap fst mFields
               , cabalPrefixInfo = prefInfo
               , stanzaName =
                 case fst ctx of

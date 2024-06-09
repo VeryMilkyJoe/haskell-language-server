@@ -1,5 +1,7 @@
 {-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE OverloadedStrings        #-}
+{-# LANGUAGE QuasiQuotes              #-}
+
 
 module Completer where
 
@@ -8,16 +10,19 @@ import           Control.Lens.Prism
 import qualified Data.ByteString                                as ByteString
 import           Data.Maybe                                     (mapMaybe)
 import qualified Data.Text                                      as T
+import qualified Data.Text.Encoding                             as Text
 import qualified Development.IDE.Plugin.Completions.Types       as Ghcide
 import           Distribution.PackageDescription                (GenericPackageDescription)
 import           Distribution.PackageDescription.Parsec         (parseGenericPackageDescriptionMaybe)
 import           Ide.Plugin.Cabal.Completion.Completer.FilePath
 import           Ide.Plugin.Cabal.Completion.Completer.Module
 import           Ide.Plugin.Cabal.Completion.Completer.Paths
+import           Ide.Plugin.Cabal.Completion.Completer.Simple   (importCompleter)
 import           Ide.Plugin.Cabal.Completion.Completer.Types    (CompleterData (..))
 import           Ide.Plugin.Cabal.Completion.Completions
 import           Ide.Plugin.Cabal.Completion.Types              (CabalPrefixInfo (..),
                                                                  StanzaName)
+import qualified Ide.Plugin.Cabal.Parse                         as Parse
 import qualified Language.LSP.Protocol.Lens                     as L
 import           System.FilePath
 import           Test.Hls
@@ -33,7 +38,8 @@ completerTests =
       directoryCompleterTests,
       completionHelperTests,
       filePathExposedModulesTests,
-      exposedModuleCompleterTests
+      exposedModuleCompleterTests,
+      importCompleterTests
     ]
 
 basicCompleterTests :: TestTree
@@ -290,23 +296,55 @@ exposedModuleCompleterTests =
         completions @?== []
     ]
   where
-    simpleCompleterData :: Maybe StanzaName -> FilePath -> T.Text -> CompleterData
-    simpleCompleterData sName dir pref = do
-      CompleterData
-        { cabalPrefixInfo = simpleExposedCabalPrefixInfo pref dir,
-          getLatestGPD = do
-            cabalContents <- ByteString.readFile $ testDataDir </> "exposed.cabal"
-            pure $ parseGenericPackageDescriptionMaybe cabalContents,
-          stanzaName = sName
-        }
     callModulesCompleter :: Maybe StanzaName -> (Maybe StanzaName -> GenericPackageDescription -> [FilePath]) -> T.Text -> IO [T.Text]
     callModulesCompleter sName func prefix = do
       let cData = simpleCompleterData sName testDataDir prefix
       completer <- modulesCompleter func mempty cData
       pure $ fmap extract completer
 
+-- TODO: These tests are a bit barebones at the moment,
+-- since we do not take cursorposition into account at this point.
+importCompleterTests :: TestTree
+importCompleterTests =
+  testGroup
+    "Import Completer Tests"
+    [ testCase "All above common sections are suggested" $ do
+      completions <- callImportCompleter importTestData
+      ("defaults" `elem` completions) @? "defaults contained"
+      ("test-defaults" `elem` completions) @? "test-defaults contained"
+    -- TODO: Only common sections defined before the current stanza may be imported
+    , testCase "Common sections occuring below are not suggested" $ do
+      completions <- callImportCompleter importTestData
+      ("notForLib" `elem` completions) @? "notForLib contained, this needs to be fixed"
+    , testCase "All common sections are suggested when curser is below them" $ do
+      completions <- callImportCompleter importTestData
+      completions @?== ["defaults", "notForLib" ,"test-defaults"]
+    ]
+    where
+      callImportCompleter :: T.Text -> IO [T.Text]
+      callImportCompleter filecontent = do
+        let cData' = simpleCompleterData Nothing testDataDir ""
+        let cabalFields = Parse.readCabalFields "not-real" (Text.encodeUtf8 filecontent)
+        case cabalFields of
+          Left err -> fail $ show err
+          Right fields -> do
+            let cData = cData' {getCabalFields = pure $ Just fields}
+            completer <- importCompleter mempty cData
+            pure $ fmap extract completer
+
+simpleCompleterData :: Maybe StanzaName -> FilePath -> T.Text -> CompleterData
+simpleCompleterData sName dir pref = do
+  CompleterData
+    { cabalPrefixInfo = simpleExposedCabalPrefixInfo pref dir,
+      getLatestGPD = do
+        cabalContents <- ByteString.readFile $ testDataDir </> "exposed.cabal"
+        pure $ parseGenericPackageDescriptionMaybe cabalContents,
+      getCabalFields = undefined,
+      stanzaName = sName
+    }
+
 mkCompleterData :: CabalPrefixInfo -> CompleterData
-mkCompleterData prefInfo = CompleterData {getLatestGPD = undefined, cabalPrefixInfo = prefInfo, stanzaName = Nothing}
+mkCompleterData prefInfo = CompleterData {getLatestGPD = undefined, getCabalFields = undefined, cabalPrefixInfo = prefInfo, stanzaName = Nothing}
 
 exposedTestDir :: FilePath
 exposedTestDir = addTrailingPathSeparator $ testDataDir </> "src-modules"
@@ -326,3 +364,41 @@ extract :: CompletionItem -> T.Text
 extract item = case item ^. L.textEdit of
   Just (InL v) -> v ^. L.newText
   _            -> error ""
+
+importTestData :: T.Text
+importTestData = [trimming|
+cabal-version:      3.0
+name:               hls-cabal-plugin
+version:            0.1.0.0
+synopsis:
+homepage:
+license:            MIT
+license-file:       LICENSE
+author:             Fendor
+maintainer:         fendor@posteo.de
+category:           Development
+extra-source-files: CHANGELOG.md
+
+common defaults
+  default-language: GHC2021
+  -- Should have been in GHC2021, an oversight
+  default-extensions: ExplicitNamespaces
+
+common test-defaults
+  ghc-options: -threaded -rtsopts -with-rtsopts=-N
+
+library
+    import:
+            ^
+    exposed-modules:  IDE.Plugin.Cabal
+    build-depends:    base ^>=4.14.3.0
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+common notForLib
+  default-language: GHC2021
+
+test-suite tests
+  import:
+          ^
+|]
