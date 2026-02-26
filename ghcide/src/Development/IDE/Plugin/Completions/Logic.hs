@@ -688,8 +688,8 @@ getCompletions
           -- They are only available when we write i.e. `myrecord.` with OverloadedRecordDot enabled.
           -- Anything that isn't a field is invalid, so those completion don't make sense.
           compls
-            | T.null prefixScope = map (notQual,) localCompls ++ map (qual,) unqualCompls ++ map (\compl -> (notQual, compl Nothing)) anyQualCompls
             | not $ null recordDotSyntaxCompls = recordDotSyntaxCompls
+            | T.null prefixScope = map (notQual,) localCompls ++ map (qual,) unqualCompls ++ map (\compl -> (notQual, compl Nothing)) anyQualCompls
             | otherwise = ((qual,) <$> Map.findWithDefault [] prefixScope (getQualCompls qualCompls))
                  ++ map (\compl -> (notQual, compl (Just prefixScope))) anyQualCompls
 
@@ -890,10 +890,10 @@ getCompletionPrefixFromRope pos@(Position l c) ropetext =
         case reverse parts of
           [] -> Nothing
           (x:xs) -> do
-            let modParts = reverse $ filter (not .T.null) xs
+            let modParts = reverse $ filter (not . T.null) xs
                 -- Must check the prefix is a valid module name, else record dot accesses treat
                 -- the record name as a qualName for search and generated imports
-                modName = if all (isUpper . T.head) modParts then T.intercalate "." modParts else ""
+                modName = T.intercalate "." modParts
             return $ PosPrefixInfo { fullLine = curLine, prefixScope = modName, prefixText = x, cursorPos = pos }
 
 completionPrefixPos :: PosPrefixInfo -> Position

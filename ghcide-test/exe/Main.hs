@@ -66,11 +66,12 @@ import           SymlinkTests
 import           THTests
 import           UnitTests
 import           WatchedFileTests
+import Test.Hls (defaultTestRunner)
 
 main :: IO ()
 main = do
   -- We mess with env vars so run single-threaded.
-  defaultMainWithRerun $ testGroup "ghcide"
+  defaultTestRunner $ testGroup "ghcide"
     [ OpenCloseTest.tests
     , InitializeResponseTests.tests
     , CompletionTests.tests
@@ -104,3 +105,4 @@ main = do
     , HieDbRetry.tests
     , ExceptionTests.tests
     ]
+

@@ -32,6 +32,7 @@ import           Test.Hls.FileSystem            (file, text)
 import           Test.Hls.Util
 import           Test.Tasty
 import           Test.Tasty.HUnit
+import Debug.Trace (traceShowM)
 
 tests :: TestTree
 tests
@@ -57,10 +58,22 @@ testSessionSingleFile testName fp txt session =
     testWithDummyPlugin testName (mkIdeTestFs [FS.directCradle [T.pack fp] , file fp (text txt)]) session
 
 completionTest :: HasCallStack => String -> [T.Text] -> Position -> [(T.Text, CompletionItemKind, T.Text, Bool, Bool, Maybe [TextEdit])] -> TestTree
-completionTest name src pos expected = testSessionSingleFile name "A.hs" (T.unlines src) $ do
-    docId <- openDoc "A.hs" "haskell"
-    _ <- waitForDiagnostics
+completionTest name src pos expected =
+    completionTestAfterAction
+      name
+      src
+      (do
+        docId <- openDoc "A.hs" "haskell"
+        _ <- waitForDiagnostics
+        pure docId
+      )
+      pos
+      expected
 
+-- |
+completionTestAfterAction :: HasCallStack => String -> [T.Text] -> Session TextDocumentIdentifier -> Position -> [(T.Text, CompletionItemKind, T.Text, Bool, Bool, Maybe [TextEdit])] -> TestTree
+completionTestAfterAction name src action pos expected = testSessionSingleFile name "A.hs" (T.unlines src) $ do
+    docId <- action
     compls <- getAndResolveCompletions docId pos
     let compls' = [ (_label, _kind, _insertText, _additionalTextEdits) | CompletionItem{..} <- compls]
     let emptyToMaybe x = if T.null x then Nothing else Just x
@@ -242,6 +255,41 @@ localCompletionTests = [
         (Position 7 19)
         [("field1", CompletionItemKind_Function, "field1", True, False, Nothing)
         ,("field2", CompletionItemKind_Function, "field2", True, False, Nothing)
+        ],
+    completionTestAfterAction
+        "jana record dot completion"
+        [ "{-# LANGUAGE OverloadedRecordDot #-}"
+        , "module Main where"
+        , "data User"
+        , "  = User"
+        , "    { name  :: String"
+        , "    , level :: Int }"
+        , "  deriving (Show)"
+        , "main :: IO ()"
+        , "main = do"
+        , "  let user = User \"Lutz\" 1"
+        , "  print user"
+        ]
+        (do
+          docId <- openDoc "A.hs" "haskell"
+          _ <- waitForDiagnostics
+          -- traceShowM("HELLOFST")
+          -- _ <- changeDoc docId [
+          --   TextDocumentContentChangeEvent $ InL
+          --     TextDocumentContentChangePartial
+          --       { _range = Range (Position 10 12) (Position 10 12)
+          --       , _rangeLength = Nothing
+          --       , _text = "."
+          --       }
+          --     ]
+          -- docContent <- documentContents docId
+          -- const (traceShowM("SNDDIAG")) docContent
+          -- _ <- waitForDiagnosticsFrom docId
+          pure docId
+        )
+        (Position 10 11)
+        [("name", CompletionItemKind_Function, "name", True, False, Nothing)
+        ,("level", CompletionItemKind_Function, "level", True, False, Nothing)
         ]
     ]
 
