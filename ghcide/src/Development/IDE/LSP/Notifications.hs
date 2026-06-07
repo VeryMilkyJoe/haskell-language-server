@@ -15,7 +15,7 @@ import qualified Language.LSP.Protocol.Message         as LSP
 import           Language.LSP.Protocol.Types
 import qualified Language.LSP.Protocol.Types           as LSP
 
-import           Control.Concurrent.STM.Stats          (atomically)
+import           Control.Concurrent.STM.Stats          (atomically, atomicallyNamed)
 import           Control.Monad.Extra
 import           Control.Monad.IO.Class
 import qualified Data.HashMap.Strict                   as HM
@@ -33,10 +33,16 @@ import           Development.IDE.Core.OfInterest       hiding (Log, LogShake)
 import           Development.IDE.Core.Service          hiding (Log, LogShake)
 import           Development.IDE.Core.Shake            hiding (Log)
 import qualified Development.IDE.Core.Shake            as Shake
+import qualified Development.IDE.Types.Shake           as Shake
 import           Development.IDE.Types.Location
 import           Ide.Logger
 import           Ide.Types
 import           Numeric.Natural
+import Development.IDE.Core.RuleTypes (GhcSessionIO(..))
+import Control.Lens ((^.))
+import qualified Language.LSP.Protocol.Lens as FD
+import Data.Foldable (traverse_)
+import Development.IDE.Core.PluginUtils (uriToFilePathE)
 
 data Log
   = LogShake Shake.Log
@@ -46,7 +52,10 @@ data Log
   | LogSavedTextDocument !Uri
   | LogClosedTextDocument !Uri
   | LogWatchedFileEvents !Text.Text
+  | LogSessionRestart
   | LogWarnNoWatchedFilesSupport
+  | LogDidDeleteFiles [FileDelete]
+  | LogDidRenameFiles [FileRename]
   deriving Show
 
 instance Pretty Log where
@@ -59,6 +68,9 @@ instance Pretty Log where
     LogClosedTextDocument uri -> "Closed text document:" <+> pretty (getUri uri)
     LogWatchedFileEvents msg -> "Watched file events:" <+> pretty msg
     LogWarnNoWatchedFilesSupport -> "Client does not support watched files. Falling back to OS polling"
+    LogSessionRestart ->  "Restarting shake session globally"
+    LogDidDeleteFiles files -> "Deleted files:" <+> pretty files
+    LogDidRenameFiles files -> "Renamed files:" <+> pretty files
 
 whenUriFile :: Uri -> (NormalizedFilePath -> IO ()) -> IO ()
 whenUriFile uri act = whenJust (LSP.uriToFilePath uri) $ act . toNormalizedFilePath'
@@ -147,6 +159,31 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc) { pluginNotificat
       success <- registerFileWatches globs
       unless success $
         liftIO $ logWith recorder Warning LogWarnNoWatchedFilesSupport
+  , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidDeleteFiles $
+      \ide vfs _ (DeleteFilesParams (fileDeletes)) ->
+        traverse_
+        (\fd -> do
+          let uri = fd ^. FD.uri
+          --TODO delete from diagnostics does not work all of the time
+          updateFileDiagnostics (cmapWithPrio LogShake recorder) (shakeExtras ide) (toNormalizedFilePath $ Text.unpack uri) Delete
+          logWith recorder Debug LogSessionRestart
+          liftIO $ Shake.shakeRestart (cmapWithPrio LogShake recorder) ide (VFSModified vfs) "" [] $ do
+            return [Shake.toNoFileKey GhcSessionIO]
+          logWith recorder Info $ LogDidDeleteFiles fileDeletes
+        )
+        fileDeletes
+  , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidRenameFiles $
+      \ide vfs _ (RenameFilesParams (fileRenames)) ->
+        traverse_
+        (\(FileRename old _) -> do
+          logWith recorder Debug LogSessionRestart
+          updateFileDiagnostics (cmapWithPrio LogShake recorder) (shakeExtras ide) (toNormalizedFilePath $ Text.unpack old) Delete
+          liftIO $ Shake.shakeRestart (cmapWithPrio LogShake recorder) ide (VFSModified vfs) "" [] $ do
+            return [Shake.toNoFileKey GhcSessionIO]
+          logWith recorder Info $ LogDidRenameFiles fileRenames
+          pure ()
+        )
+        fileRenames
   ],
 
     -- The ghcide descriptors should come last'ish so that the notification handlers
