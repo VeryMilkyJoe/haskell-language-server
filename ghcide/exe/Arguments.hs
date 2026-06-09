@@ -11,6 +11,7 @@ import           Options.Applicative
 data Arguments = Arguments
     {argsCwd                        :: Maybe FilePath
     ,argsVersion                    :: Bool
+    ,argsNumericVersion                    :: Bool
     ,argsShakeProfiling             :: Maybe FilePath
     ,argsOTMemoryProfiling          :: Bool
     ,argsTesting                    :: Bool
@@ -33,6 +34,7 @@ arguments :: IdePlugins IdeState -> Parser Arguments
 arguments plugins = Arguments
       <$> optional (strOption $ long "cwd" <> metavar "DIR" <> help "Change to this directory")
       <*> switch (long "version" <> help "Show ghcide and GHC versions")
+      <*> switch (long "numeric-version" <> help "Show numeric ghcide version")
       <*> optional (strOption $ long "shake-profiling" <> metavar "DIR" <> help "Dump profiling reports to this directory (env var: GHCIDE_BUILD_PROFILING)")
       <*> switch (long "ot-memory-profiling" <> help "Record OpenTelemetry info to the eventlog. Needs the -l RTS flag to have an effect")
       <*> switch (long "test" <> help "Enable additional lsp messages used by the testsuite")

@@ -78,6 +78,7 @@ main = withTelemetryRecorder $ \telemetryRecorder -> do
     Arguments{..} <- getArguments hlsPlugins
 
     if argsVersion then ghcideVersion >>= putStrLn >> exitSuccess
+    else if argsNumericVersion then putStrLn "2.14.0.0" >> exitSuccess
     else hPutStrLn stderr {- see WARNING above -} =<< ghcideVersion
 
     -- if user uses --cwd option we need to make this path absolute (and set the current directory to it)
@@ -125,14 +126,14 @@ main = withTelemetryRecorder $ \telemetryRecorder -> do
 
         , IDEMain.argsThreads = case argsThreads of 0 -> Nothing ; i -> Just (fromIntegral i)
 
-        , IDEMain.argsIdeOptions = \config sessionLoader ->
-            let defOptions = IDEMain.argsIdeOptions arguments config sessionLoader
-            in defOptions
-                { optShakeProfiling = argsShakeProfiling
-                , optCheckParents = pure $ checkParents config
-                , optCheckProject = pure $ checkProject config
-                , optRunSubset = not argsConservativeChangeTracking
-                , optVerifyCoreFile = argsVerifyCoreFile
-                }
+        -- , IDEMain.argsIdeOptions = \config sessionLoader ->
+        --     let defOptions = IDEMain.argsIdeOptions arguments config sessionLoader
+        --     in defOptions
+        --         { optShakeProfiling = argsShakeProfiling
+        --         , optCheckParents = pure $ checkParents config
+        --         , optCheckProject = pure $ checkProject config
+        --         , optRunSubset = not argsConservativeChangeTracking
+        --         , optVerifyCoreFile = argsVerifyCoreFile
+        --         }
         , IDEMain.argsMonitoring = OpenTelemetry.monitoring
         }

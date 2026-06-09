@@ -38,11 +38,9 @@ import           Development.IDE.Types.Location
 import           Ide.Logger
 import           Ide.Types
 import           Numeric.Natural
-import Development.IDE.Core.RuleTypes (GhcSessionIO(..))
 import Control.Lens ((^.))
 import qualified Language.LSP.Protocol.Lens as FD
 import Data.Foldable (traverse_)
-import Development.IDE.Core.PluginUtils (uriToFilePathE)
 
 data Log
   = LogShake Shake.Log
@@ -159,31 +157,31 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc) { pluginNotificat
       success <- registerFileWatches globs
       unless success $
         liftIO $ logWith recorder Warning LogWarnNoWatchedFilesSupport
-  , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidDeleteFiles $
-      \ide vfs _ (DeleteFilesParams (fileDeletes)) ->
-        traverse_
-        (\fd -> do
-          let uri = fd ^. FD.uri
-          --TODO delete from diagnostics does not work all of the time
-          updateFileDiagnostics (cmapWithPrio LogShake recorder) (shakeExtras ide) (toNormalizedFilePath $ Text.unpack uri) Delete
-          logWith recorder Debug LogSessionRestart
-          liftIO $ Shake.shakeRestart (cmapWithPrio LogShake recorder) ide (VFSModified vfs) "" [] $ do
-            return [Shake.toNoFileKey GhcSessionIO]
-          logWith recorder Info $ LogDidDeleteFiles fileDeletes
-        )
-        fileDeletes
-  , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidRenameFiles $
-      \ide vfs _ (RenameFilesParams (fileRenames)) ->
-        traverse_
-        (\(FileRename old _) -> do
-          logWith recorder Debug LogSessionRestart
-          updateFileDiagnostics (cmapWithPrio LogShake recorder) (shakeExtras ide) (toNormalizedFilePath $ Text.unpack old) Delete
-          liftIO $ Shake.shakeRestart (cmapWithPrio LogShake recorder) ide (VFSModified vfs) "" [] $ do
-            return [Shake.toNoFileKey GhcSessionIO]
-          logWith recorder Info $ LogDidRenameFiles fileRenames
-          pure ()
-        )
-        fileRenames
+  -- , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidDeleteFiles $
+  --     \ide vfs _ (DeleteFilesParams (fileDeletes)) ->
+  --       traverse_
+  --       (\fd -> do
+  --         let uri = fd ^. FD.uri
+  --         --TODO delete from diagnostics does not work all of the time
+  --         updateFileDiagnostics (cmapWithPrio LogShake recorder) (shakeExtras ide) (toNormalizedFilePath $ Text.unpack uri) Delete
+  --         logWith recorder Debug LogSessionRestart
+  --         liftIO $ Shake.shakeRestart (cmapWithPrio LogShake recorder) ide (VFSModified vfs) "" [] $ do
+  --           return [Shake.toNoFileKey GhcSessionIO]
+  --         logWith recorder Info $ LogDidDeleteFiles fileDeletes
+  --       )
+  --       fileDeletes
+  -- , mkPluginNotificationHandler LSP.SMethod_WorkspaceDidRenameFiles $
+  --     \ide vfs _ (RenameFilesParams (fileRenames)) ->
+  --       traverse_
+  --       (\(FileRename old _) -> do
+  --         logWith recorder Debug LogSessionRestart
+  --         updateFileDiagnostics (cmapWithPrio LogShake recorder) (shakeExtras ide) (toNormalizedFilePath $ Text.unpack old) Delete
+  --         liftIO $ Shake.shakeRestart (cmapWithPrio LogShake recorder) ide (VFSModified vfs) "" [] $ do
+  --           return [Shake.toNoFileKey GhcSessionIO]
+  --         logWith recorder Info $ LogDidRenameFiles fileRenames
+  --         pure ()
+  --       )
+  --       fileRenames
   ],
 
     -- The ghcide descriptors should come last'ish so that the notification handlers

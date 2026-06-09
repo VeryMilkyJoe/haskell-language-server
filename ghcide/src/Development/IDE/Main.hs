@@ -44,8 +44,7 @@ import           Development.IDE.Core.OfInterest          (FileOfInterestStatus 
                                                            setFilesOfInterest)
 import           Development.IDE.Core.Rules               (mainRule)
 import qualified Development.IDE.Core.Rules               as Rules
-import           Development.IDE.Core.RuleTypes           (GenerateCore (GenerateCore),
-                                                           GetHieAst (GetHieAst),
+import           Development.IDE.Core.RuleTypes           (
                                                            TypeCheck (TypeCheck))
 import           Development.IDE.Core.Service             (initialise,
                                                            runAction)
@@ -71,13 +70,13 @@ import qualified Development.IDE.Plugin.Test              as Test
 import           Development.IDE.Session                  (SessionLoadingOptions,
                                                            getHieDbLoc,
                                                            getInitialGhcLibDirDefault,
-                                                           loadSessionWithOptions,
+
                                                            retryOnSqliteBusy)
 import qualified Development.IDE.Session                  as Session
 import           Development.IDE.Types.Location           (NormalizedUri,
                                                            toNormalizedFilePath')
 import           Development.IDE.Types.Monitoring         (Monitoring)
-import           Development.IDE.Types.Options            (IdeGhcSession,
+import           Development.IDE.Types.Options            (
                                                            IdeOptions (optCheckParents, optCheckProject, optReportProgress, optRunSubset),
                                                            IdeTesting (IdeTesting),
                                                            clientSupportsProgress,
@@ -212,7 +211,6 @@ data Arguments = Arguments
     , argsHlsPlugins            :: IdePlugins IdeState
     , argsGhcidePlugin          :: Plugin Config  -- ^ Deprecated
     , argsSessionLoadingOptions :: SessionLoadingOptions
-    , argsIdeOptions            :: Config -> Action IdeGhcSession -> IdeOptions
     , argsLspOptions            :: LSP.Options
     , argsDefaultHlsConfig      :: Config
     , argsGetHieDbLoc           :: FilePath -> IO FilePath -- ^ Map project roots to the location of the hiedb for the project
@@ -232,10 +230,6 @@ defaultArguments recorder projectRoot plugins = Arguments
         , argsGhcidePlugin = mempty
         , argsHlsPlugins = pluginDescToIdePlugins (GhcIde.descriptors (cmapWithPrio LogGhcIde recorder)) <> plugins
         , argsSessionLoadingOptions = def
-        , argsIdeOptions = \config ghcSession -> (defaultIdeOptions ghcSession)
-            { optCheckProject = pure $ checkProject config
-            , optCheckParents = pure $ checkParents config
-            }
         , argsLspOptions = def
             { LSP.optCompletionTriggerCharacters = Just "."
             -- Generally people start to notice that something is taking a while at about 1s, so
@@ -272,21 +266,15 @@ defaultArguments recorder projectRoot plugins = Arguments
 testing :: Recorder (WithPriority Log) -> FilePath -> IdePlugins IdeState -> Arguments
 testing recorder projectRoot plugins =
   let
-    arguments@Arguments{ argsHlsPlugins, argsIdeOptions, argsLspOptions } =
+    arguments@Arguments{ argsHlsPlugins, argsLspOptions } =
         defaultArguments recorder projectRoot plugins
     hlsPlugins = pluginDescToIdePlugins $
       idePluginsToPluginDesc argsHlsPlugins
-      ++ [Test.blockCommandDescriptor "block-command", Test.plugin]
-    ideOptions config sessionLoader =
-      let
-        defOptions = argsIdeOptions config sessionLoader
-      in
-        defOptions{ optTesting = IdeTesting True }
+      ++ [Test.plugin]
     lspOptions = argsLspOptions { LSP.optProgressStartDelay = 0, LSP.optProgressUpdateDelay = 0 }
   in
     arguments
       { argsHlsPlugins = hlsPlugins
-      , argsIdeOptions = ideOptions
       , argsLspOptions = lspOptions
       }
 
@@ -360,18 +348,18 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
                 getIdeState ideStateVar env rootPath withHieDb threadQueue = do
                   t <- ioT
                   logWith recorder Info $ LogLspStartDuration t
-                  sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions rootPath (tLoaderQueue threadQueue)
+                  -- sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions rootPath (tLoaderQueue threadQueue)
                   config <- LSP.runLspT env LSP.getConfig
-                  let def_options = argsIdeOptions config sessionLoader
+                  let def_options = defaultIdeOptions
 
                   -- disable runSubset if the client doesn't support watched files
-                  runSubset <- (optRunSubset def_options &&) <$> LSP.runLspT env isWatchSupported
-                  logWith recorder Debug $ LogShouldRunSubset runSubset
+                  -- runSubset <- (optRunSubset def_options &&) <$> LSP.runLspT env isWatchSupported
+                  -- logWith recorder Debug $ LogShouldRunSubset runSubset
 
                   let ideOptions = def_options
                               { optReportProgress = clientSupportsProgress caps
                               , optModifyDynFlags = optModifyDynFlags def_options <> pluginModifyDynflags plugins
-                              , optRunSubset = runSubset
+                              , optRunSubset = False
                               }
                       caps = LSP.resClientCapabilities env
                   monitoring <- argsMonitoring
@@ -433,8 +421,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             putStrLn $ "Found " ++ show n ++ " cradle" ++ ['s' | n /= 1]
             when (n > 0) $ putStrLn $ "  (" ++ intercalate ", " (catMaybes ucradles) ++ ")"
             putStrLn "\nStep 3/4: Initializing the IDE"
-            sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions dir (tLoaderQueue threadQueue)
-            let def_options = argsIdeOptions argsDefaultHlsConfig sessionLoader
+            -- sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions dir (tLoaderQueue threadQueue)
+            let def_options = defaultIdeOptions
                 ideOptions = def_options
                         { optCheckParents = pure NeverCheck
                         , optCheckProject = pure False
@@ -447,8 +435,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
             putStrLn "\nStep 4/4: Type checking the files"
             setFilesOfInterest ide $ HashMap.fromList $ map ((,OnDisk) . toNormalizedFilePath') absoluteFiles
             results <- runAction "User TypeCheck" ide $ uses TypeCheck (map toNormalizedFilePath' absoluteFiles)
-            _results <- runAction "GetHie" ide $ uses GetHieAst (map toNormalizedFilePath' absoluteFiles)
-            _results <- runAction "GenerateCore" ide $ uses GenerateCore (map toNormalizedFilePath' absoluteFiles)
+            -- _results <- runAction "GetHie" ide $ uses GetHieAst (map toNormalizedFilePath' absoluteFiles)
+            -- _results <- runAction "GenerateCore" ide $ uses GenerateCore (map toNormalizedFilePath' absoluteFiles)
             let (worked, failed) = partition fst $ zip (map isJust results) absoluteFiles
             when (failed /= []) $
                 putStr $ unlines $ "Files that failed:" : map ((++) " * " . snd) failed
@@ -471,8 +459,8 @@ defaultMain recorder Arguments{..} = withHeapStats (cmapWithPrio LogHeapStats re
           let root = argsProjectRoot
           dbLoc <- getHieDbLoc root
           runWithWorkerThreads (cmapWithPrio LogSession recorder) dbLoc mempty $ \hiedb threadQueue -> do
-            sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "." (tLoaderQueue threadQueue)
-            let def_options = argsIdeOptions argsDefaultHlsConfig sessionLoader
+            -- sessionLoader <- loadSessionWithOptions (cmapWithPrio LogSession recorder) argsSessionLoadingOptions "." (tLoaderQueue threadQueue)
+            let def_options = defaultIdeOptions --argsIdeOptions argsDefaultHlsConfig sessionLoader
                 ideOptions = def_options
                     { optCheckParents = pure NeverCheck
                     , optCheckProject = pure False

@@ -37,7 +37,6 @@ import           Data.Ord                              (comparing)
 import qualified Data.Text                             as T
 import           Development.IDE.Core.FileStore        (getVersionedTextDoc)
 import           Development.IDE.Core.PluginUtils
-import           Development.IDE.Core.Rules            (usePropertyAction)
 import           Development.IDE.Core.RuleTypes
 import           Development.IDE.Core.Service          hiding (Log)
 import           Development.IDE.Core.Shake            hiding (Log)
@@ -142,7 +141,7 @@ renameModuleProvider recorder state _ (RenameFilesParams renames) = do
                 _ -> do
                     logWith  recorder' Info $ ModuleRename.NoModuleName newNfp
                     pure Nothing
-    
+
         guessModuleName newNfp oldNfp = do
             (session, _) <- runActionE "ModuleName.ghcSession" state $ useWithStaleE GhcSession oldNfp
             srcPaths <- liftIO $ evalGhcEnv (hscEnv session) $ importPaths <$> getSessionDynFlags

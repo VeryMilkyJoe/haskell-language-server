@@ -144,13 +144,7 @@ kick = do
     liftIO $ progressUpdate progress ProgressNewStarted
 
     -- Update the exports map
-    results <- uses GenerateCore files
-            <* uses GetHieAst files
-            -- needed to have non local completions on the first edit
-            -- when the first edit breaks the module header
-            <* uses NonLocalCompletions files
-    let mguts = catMaybes results
-    void $ liftIO $ atomically $ modifyTVar' exportsMap (updateExportsMapMg mguts)
+    results <- uses TypeCheck files
 
     liftIO $ progressUpdate progress ProgressCompleted
 

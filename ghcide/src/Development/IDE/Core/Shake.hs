@@ -78,7 +78,7 @@ module Development.IDE.Core.Shake(
     garbageCollectDirtyKeys,
     garbageCollectDirtyKeysOlderThan,
     Log(..),
-    VFSModified(..), getClientConfigAction,
+    VFSModified(..),
     ThreadQueue(..),
     runWithSignal,
     askShake
@@ -377,23 +377,23 @@ getShakeExtrasRules = do
 -- | Returns the client configuration, creating a build dependency.
 --   You should always use this function when accessing client configuration
 --   from build rules.
-getClientConfigAction :: Action Config
-getClientConfigAction = do
-  ShakeExtras{lspEnv, idePlugins} <- getShakeExtras
-  currentConfig <- (`LSP.runLspT` LSP.getConfig) `traverse` lspEnv
-  mbVal <- unhashed <$> useNoFile_ GetClientSettings
-  let defValue = fromMaybe def currentConfig
-  case A.parse (parseConfig idePlugins defValue) <$> mbVal of
-    Just (Success c) -> return c
-    _                -> return defValue
+-- getClientConfigAction :: Action Config
+-- getClientConfigAction = do
+--   ShakeExtras{lspEnv, idePlugins} <- getShakeExtras
+--   currentConfig <- (`LSP.runLspT` LSP.getConfig) `traverse` lspEnv
+--   mbVal <- unhashed <$> useNoFile_ GetClientSettings
+--   let defValue = fromMaybe def currentConfig
+--   case A.parse (parseConfig idePlugins defValue) <$> mbVal of
+--     Just (Success c) -> return c
+--     _                -> return defValue
 
 getPluginConfigAction :: PluginId -> Action PluginConfig
 getPluginConfigAction plId = do
-    config <- getClientConfigAction
+    --config <- getClientConfigAction
     ShakeExtras{idePlugins = IdePlugins plugins} <- getShakeExtras
     let plugin = fromMaybe (error $ "Plugin not found: " <> show plId) $
                     find (\p -> pluginId p == plId) plugins
-    return $ HLS.configForPlugin config plugin
+    return def --  $ HLS.configForPlugin (def config) plugin
 
 -- | Register a function that will be called to get the "stale" result of a rule, possibly from disk
 -- This is called when we don't already have a result, or computing the rule failed.
@@ -1017,18 +1017,20 @@ preservedKeys checkParents = HSet.fromList $
     [ typeOf GetFileExists
     , typeOf GetModificationTime
     , typeOf IsFileOfInterest
-    , typeOf GhcSessionIO
-    , typeOf GetClientSettings
+    -- , typeOf GhcSessionIO
+    -- , typeOf GetClientSettings
     , typeOf AddWatchedFile
-    , typeOf GetKnownTargets
+    -- , typeOf GetKnownTargets
     ]
     ++ concat
     -- preserved if CheckParents is enabled since we need to rebuild the ModuleGraph
-    [ [ typeOf GetModSummary
-       , typeOf GetModSummaryWithoutTimestamps
-       , typeOf GetLocatedImports
-       ]
-    | checkParents /= NeverCheck
+    [
+    --     [ typeOf GetModSummary
+    --    , typeOf GetModSummaryWithoutTimestamps
+    --    , typeOf GetLocatedImports
+    --    ]
+    -- |
+    -- checkParents /= NeverCheck
     ]
 
 -- | Define a new Rule without early cutoff

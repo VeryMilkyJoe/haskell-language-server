@@ -12,11 +12,8 @@ Provide CodeLenses to:
 -}
 module Ide.Plugin.Rename.ModuleName (
     Log,
-    codeLens,
     updateModuleNameCommand,
-    command,
-    potentialModuleNames,
-    codeModuleName,
+
 ) where
 
 import           Control.Monad                        (forM_, void)
@@ -35,8 +32,7 @@ import           Data.Ord                             (comparing)
 import           Data.String                          (IsString)
 import qualified Data.Text                            as T
 import qualified Data.Text.Utf16.Rope.Mixed           as Rope
-import           Development.IDE                      (GetParsedModule (GetParsedModule),
-                                                       GhcSession (GhcSession),
+import           Development.IDE                      (
                                                        IdeState, Pretty,
                                                        Priority (Debug),
                                                        Recorder, WithPriority,
@@ -68,28 +64,28 @@ import           System.FilePath                      (dropExtension, normalise,
 updateModuleNameCommand :: IsString p => p
 updateModuleNameCommand = "updateModuleName"
 
--- | Generate code lenses
-codeLens :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState 'Method_TextDocumentCodeLens
-codeLens recorder state pluginId CodeLensParams{_textDocument=TextDocumentIdentifier uri} = do
-  res <- action recorder state uri
-  pure $ InL (asCodeLens  <$> res)
-  where
-    asCodeLens :: Action -> CodeLens
-    asCodeLens Replace{..} = CodeLens aRange (Just cmd) Nothing
-      where
-        cmd = mkLspCommand pluginId updateModuleNameCommand aTitle (Just [toJSON aUri])
+-- -- | Generate code lenses
+-- codeLens :: Recorder (WithPriority Log) -> PluginMethodHandler IdeState 'Method_TextDocumentCodeLens
+-- codeLens recorder state pluginId CodeLensParams{_textDocument=TextDocumentIdentifier uri} = do
+--   res <- action recorder state uri
+--   pure $ InL (asCodeLens  <$> res)
+--   where
+--     asCodeLens :: Action -> CodeLens
+--     asCodeLens Replace{..} = CodeLens aRange (Just cmd) Nothing
+--       where
+--         cmd = mkLspCommand pluginId updateModuleNameCommand aTitle (Just [toJSON aUri])
 
--- | (Quasi) Idempotent command execution: recalculate action to execute on command request
-command :: Recorder (WithPriority Log) -> CommandFunction IdeState Uri
-command recorder state _ uri = do
-  actMaybe <- action recorder state uri
-  forM_ actMaybe $ \Replace{..} ->
-    let
-      -- | Convert an Action to the corresponding edit operation
-      edit = WorkspaceEdit (Just $ Map.singleton aUri [TextEdit aRange aCode]) Nothing Nothing
-    in
-      void $ lift $ pluginSendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams Nothing edit) (const (pure ()))
-  pure $ InR Null
+-- -- | (Quasi) Idempotent command execution: recalculate action to execute on command request
+-- command :: Recorder (WithPriority Log) -> CommandFunction IdeState Uri
+-- command recorder state _ uri = do
+--   actMaybe <- action recorder state uri
+--   forM_ actMaybe $ \Replace{..} ->
+--     let
+--       -- | Convert an Action to the corresponding edit operation
+--       edit = WorkspaceEdit (Just $ Map.singleton aUri [TextEdit aRange aCode]) Nothing Nothing
+--     in
+--       void $ lift $ pluginSendRequest SMethod_WorkspaceApplyEdit (ApplyWorkspaceEditParams Nothing edit) (const (pure ()))
+--   pure $ InR Null
 
 -- | A source code change
 data Action = Replace
@@ -100,82 +96,82 @@ data Action = Replace
   }
   deriving (Show)
 
--- | Required action (that can be converted to either CodeLenses or CodeActions)
-action :: Recorder (WithPriority Log) -> IdeState -> Uri -> ExceptT PluginError (HandlerM c) [Action]
-action recorder state uri = do
-    nfp <- getNormalizedFilePathE  uri
+-- -- | Required action (that can be converted to either CodeLenses or CodeActions)
+-- action :: Recorder (WithPriority Log) -> IdeState -> Uri -> ExceptT PluginError (HandlerM c) [Action]
+-- action recorder state uri = do
+--     nfp <- getNormalizedFilePathE  uri
 
-    contents <- liftIO $ runAction "ModuleName.getFileContents" state $ getFileContents nfp
-    let emptyModule = maybe True (T.null . T.strip . Rope.toText) contents
+--     contents <- liftIO $ runAction "ModuleName.getFileContents" state $ getFileContents nfp
+--     let emptyModule = maybe True (T.null . T.strip . Rope.toText) contents
 
-    correctNames <- mapExceptT liftIO $ pathModuleNames recorder state nfp
-    logWith recorder Debug (CorrectNames correctNames)
-    let bestName = minimumBy (comparing T.length) <$> NE.nonEmpty correctNames
-    logWith recorder Debug (BestName bestName)
+--     correctNames <- mapExceptT liftIO $ pathModuleNames recorder state nfp
+--     logWith recorder Debug (CorrectNames correctNames)
+--     let bestName = minimumBy (comparing T.length) <$> NE.nonEmpty correctNames
+--     logWith recorder Debug (BestName bestName)
 
-    statedNameMaybe <- liftIO $ codeModuleName state nfp
-    logWith recorder Debug (ModuleName $ snd <$> statedNameMaybe)
-    case (bestName, statedNameMaybe) of
-      (Just bestName, Just (nameRange, statedName))
-        | statedName `notElem` correctNames ->
-            pure [Replace uri nameRange ("Set module name to " <> bestName) bestName]
-      (Just bestName, Nothing)
-        | emptyModule ->
-            let code = "module " <> bestName <> " where\n"
-            in pure [Replace uri (Range (Position 0 0) (Position 0 0)) code code]
-      _ -> pure []
+--     statedNameMaybe <- liftIO $ codeModuleName state nfp
+--     logWith recorder Debug (ModuleName $ snd <$> statedNameMaybe)
+--     case (bestName, statedNameMaybe) of
+--       (Just bestName, Just (nameRange, statedName))
+--         | statedName `notElem` correctNames ->
+--             pure [Replace uri nameRange ("Set module name to " <> bestName) bestName]
+--       (Just bestName, Nothing)
+--         | emptyModule ->
+--             let code = "module " <> bestName <> " where\n"
+--             in pure [Replace uri (Range (Position 0 0) (Position 0 0)) code code]
+--       _ -> pure []
 
--- | Possible module names, as derived by the position of the module in the
--- source directories.  There may be more than one possible name, if the source
--- directories are nested inside each other.
-pathModuleNames :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> ExceptT PluginError IO [T.Text]
-pathModuleNames recorder state nfp
-  | firstLetter isLower $ takeFileName filePath = return ["Main"]
-  | otherwise = do
-      (session, _) <- runActionE "ModuleName.ghcSession" state $ useWithStaleE GhcSession nfp
-      srcPaths <- liftIO $ evalGhcEnv (hscEnv session) $ importPaths <$> getSessionDynFlags
-      logWith recorder Debug (SrcPaths srcPaths)
-      potentialModuleNames recorder state filePath srcPaths
-      -- Append a `pathSeparator` to make the path looks like a directory,
-      --   and then we can drop it uniformly.
-      -- See https://github.com/haskell/haskell-language-server/pull/3092 for details.
-  where
-    filePath = fromNormalizedFilePath nfp
+-- -- | Possible module names, as derived by the position of the module in the
+-- -- source directories.  There may be more than one possible name, if the source
+-- -- directories are nested inside each other.
+-- pathModuleNames :: Recorder (WithPriority Log) -> IdeState -> NormalizedFilePath -> ExceptT PluginError IO [T.Text]
+-- pathModuleNames recorder state nfp
+--   | firstLetter isLower $ takeFileName filePath = return ["Main"]
+--   | otherwise = do
+--       (session, _) <- runActionE "ModuleName.ghcSession" state $ useWithStaleE GhcSession nfp
+--       srcPaths <- liftIO $ evalGhcEnv (hscEnv session) $ importPaths <$> getSessionDynFlags
+--       logWith recorder Debug (SrcPaths srcPaths)
+--       potentialModuleNames recorder state filePath srcPaths
+--       -- Append a `pathSeparator` to make the path looks like a directory,
+--       --   and then we can drop it uniformly.
+--       -- See https://github.com/haskell/haskell-language-server/pull/3092 for details.
+--   where
+--     filePath = fromNormalizedFilePath nfp
 
-potentialModuleNames :: Recorder (WithPriority Log) -> IdeState -> [Char] -> [FilePath] -> ExceptT PluginError IO [T.Text]
-potentialModuleNames recorder state filePath srcPaths = do
-    let paths = map (normalise . (<> pure pathSeparator)) srcPaths
-    logWith recorder Debug (NormalisedPaths paths)
+-- potentialModuleNames :: Recorder (WithPriority Log) -> IdeState -> [Char] -> [FilePath] -> ExceptT PluginError IO [T.Text]
+-- potentialModuleNames recorder state filePath srcPaths = do
+--     let paths = map (normalise . (<> pure pathSeparator)) srcPaths
+--     logWith recorder Debug (NormalisedPaths paths)
 
-    -- TODO, this can be avoid if the filePath is already absolute,
-    -- we can avoid the toAbsolute call in the future.
-    -- see Note [Root Directory]
-    let mdlPath = (toAbsolute $ rootDir state) filePath
-    logWith recorder Debug (AbsoluteFilePath mdlPath)
+--     -- TODO, this can be avoid if the filePath is already absolute,
+--     -- we can avoid the toAbsolute call in the future.
+--     -- see Note [Root Directory]
+--     let mdlPath = (toAbsolute $ rootDir state) filePath
+--     logWith recorder Debug (AbsoluteFilePath mdlPath)
 
-    let suffixes = mapMaybe (`stripPrefix` mdlPath) paths
-    pure (map moduleNameFrom suffixes)
-  where
-    moduleNameFrom =
-      T.pack
-        . intercalate "."
-        -- Do not suggest names whose components start from a lower-case char,
-        -- they are guaranteed to be malformed.
-        . filter (firstLetter isUpper)
-        . splitDirectories
-        . dropExtension
+--     let suffixes = mapMaybe (`stripPrefix` mdlPath) paths
+--     pure (map moduleNameFrom suffixes)
+--   where
+--     moduleNameFrom =
+--       T.pack
+--         . intercalate "."
+--         -- Do not suggest names whose components start from a lower-case char,
+--         -- they are guaranteed to be malformed.
+--         . filter (firstLetter isUpper)
+--         . splitDirectories
+--         . dropExtension
 
 firstLetter :: (Char -> Bool) -> FilePath -> Bool
 firstLetter _ []       = False
 firstLetter pred (c:_) = pred c
 
--- | The module name, as stated in the module
-codeModuleName :: IdeState -> NormalizedFilePath -> IO (Maybe (Range, T.Text))
-codeModuleName state nfp = runMaybeT $ do
-  (pm, mp) <- MaybeT . runAction "ModuleName.GetParsedModule" state $ useWithStale GetParsedModule nfp
-  L (locA -> (RealSrcSpan l _)) m <- MaybeT . pure . hsmodName . unLoc $ pm_parsed_source pm
-  range <- MaybeT . pure $ toCurrentRange mp (realSrcSpanToRange l)
-  pure (range, T.pack $ moduleNameString m)
+-- -- | The module name, as stated in the module
+-- codeModuleName :: IdeState -> NormalizedFilePath -> IO (Maybe (Range, T.Text))
+-- codeModuleName state nfp = runMaybeT $ do
+--   (pm, mp) <- MaybeT . runAction "ModuleName.GetParsedModule" state $ useWithStale GetParsedModule nfp
+--   L (locA -> (RealSrcSpan l _)) m <- MaybeT . pure . hsmodName . unLoc $ pm_parsed_source pm
+--   range <- MaybeT . pure $ toCurrentRange mp (realSrcSpanToRange l)
+--   pure (range, T.pack $ moduleNameString m)
 
 data Log =
     CorrectNames [T.Text]

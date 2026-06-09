@@ -29,15 +29,13 @@ import           Data.Maybe                           (catMaybes, isJust,
                                                        maybeToList)
 import qualified Data.Text                            as T
 import           Development.IDE                      (FileDiagnostic (..),
-                                                       GhcSession (..),
                                                        HscEnvEq (hscEnv),
                                                        RuleResult, Rules, Uri,
                                                        _SomeStructuredMessage,
                                                        define,
                                                        fdStructuredMessageL,
-                                                       srcSpanToRange,
-                                                       usePropertyAction)
-import           Development.IDE.Core.Compile         (TcModuleResult (..))
+                                                       srcSpanToRange
+                                                       )
 import           Development.IDE.Core.PluginUtils
 import           Development.IDE.Core.PositionMapping (PositionMapping,
                                                        fromCurrentRange,
@@ -104,10 +102,8 @@ typeLensCommandId = "typesignature.add"
 descriptor :: Recorder (WithPriority Log) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId =
   (defaultPluginDescriptor plId desc)
-    { pluginHandlers = mkPluginHandler SMethod_TextDocumentCodeLens codeLensProvider
-                    <> mkResolveHandler SMethod_CodeLensResolve codeLensResolveProvider
+    { pluginHandlers = mkResolveHandler SMethod_CodeLensResolve codeLensResolveProvider
     , pluginCommands = [PluginCommand (CommandId typeLensCommandId) "adds a signature" commandHandler]
-    , pluginRules = rules recorder
     , pluginConfigDescriptor = defaultConfigDescriptor {configCustomConfig = mkCustomConfig properties}
     }
   where
@@ -121,58 +117,58 @@ properties = emptyProperties
     , (Diagnostics, "Follows error messages produced by GHC about missing signatures")
     ] Always
 
-codeLensProvider :: PluginMethodHandler IdeState Method_TextDocumentCodeLens
-codeLensProvider ideState pId CodeLensParams{_textDocument = TextDocumentIdentifier uri} = do
-    mode <- liftIO $ runAction "codeLens.config" ideState $ usePropertyAction #mode pId properties
-    nfp <- getNormalizedFilePathE uri
-    -- We have two ways we can possibly generate code lenses for type lenses.
-    -- Different options are with different "modes" of the type-lenses plugin.
-    -- (Remember here, as the code lens is not resolved yet, we only really need
-    -- the range and any data that will help us resolve it later)
-    let -- The first option is to generate lens from diagnostics about
-        -- top level bindings.
-        generateLensFromGlobalDiags diags =
-          -- We don't actually pass any data to resolve, however we need this
-          -- dummy type to make sure HLS resolves our lens
-          [ CodeLens _range Nothing (Just $ toJSON TypeLensesResolve)
-            | diag <- diags
-            , let Diagnostic {_range} = fdLspDiagnostic diag
-            , fdFilePath diag == nfp
-            , isGlobalDiagnostic diag]
-        -- The second option is to generate lenses from the GlobalBindingTypeSig
-        -- rule. This is the only type that needs to have the range adjusted
-        -- with PositionMapping.
-        -- PositionMapping for diagnostics doesn't make sense, because we always
-        -- have fresh diagnostics even if current module parsed failed (the
-        -- diagnostic would then be parse failed). See
-        -- https://github.com/haskell/haskell-language-server/pull/3558 for this
-        -- discussion.
-        generateLensFromGlobal sigs mp = do
-          [ CodeLens newRange Nothing (Just $ toJSON TypeLensesResolve)
-            | sig <- sigs
-            , Just range <- [srcSpanToRange (gbSrcSpan sig)]
-            , Just newRange <- [toCurrentRange mp range]]
-    if mode == Always || mode == Exported
-      then do
-        -- In this mode we get the global bindings from the
-        -- GlobalBindingTypeSigs rule.
-        (GlobalBindingTypeSigsResult gblSigs, gblSigsMp) <-
-          runActionE "codeLens.GetGlobalBindingTypeSigs" ideState
-          $ useWithStaleE GetGlobalBindingTypeSigs nfp
-        -- Depending on whether we only want exported or not we filter our list
-        -- of signatures to get what we want
-        let relevantGlobalSigs =
-              if mode == Exported
-                then filter gbExported gblSigs
-                else gblSigs
-        pure $ InL $ generateLensFromGlobal relevantGlobalSigs gblSigsMp
-      else do
-        -- For this mode we exclusively use diagnostics to create the lenses.
-        -- However we will still use the GlobalBindingTypeSigs to resolve them.
-        diags <- liftIO $ atomically $ getDiagnostics ideState
-        hDiags <- liftIO $ atomically $ getHiddenDiagnostics ideState
-        let allDiags = diags <> hDiags
-        pure $ InL $ generateLensFromGlobalDiags allDiags
+-- codeLensProvider :: PluginMethodHandler IdeState Method_TextDocumentCodeLens
+-- codeLensProvider ideState pId CodeLensParams{_textDocument = TextDocumentIdentifier uri} = do
+--     mode <- liftIO $ runAction "codeLens.config" ideState $ usePropertyAction #mode pId properties
+--     nfp <- getNormalizedFilePathE uri
+--     -- We have two ways we can possibly generate code lenses for type lenses.
+--     -- Different options are with different "modes" of the type-lenses plugin.
+--     -- (Remember here, as the code lens is not resolved yet, we only really need
+--     -- the range and any data that will help us resolve it later)
+--     let -- The first option is to generate lens from diagnostics about
+--         -- top level bindings.
+--         generateLensFromGlobalDiags diags =
+--           -- We don't actually pass any data to resolve, however we need this
+--           -- dummy type to make sure HLS resolves our lens
+--           [ CodeLens _range Nothing (Just $ toJSON TypeLensesResolve)
+--             | diag <- diags
+--             , let Diagnostic {_range} = fdLspDiagnostic diag
+--             , fdFilePath diag == nfp
+--             , isGlobalDiagnostic diag]
+--         -- The second option is to generate lenses from the GlobalBindingTypeSig
+--         -- rule. This is the only type that needs to have the range adjusted
+--         -- with PositionMapping.
+--         -- PositionMapping for diagnostics doesn't make sense, because we always
+--         -- have fresh diagnostics even if current module parsed failed (the
+--         -- diagnostic would then be parse failed). See
+--         -- https://github.com/haskell/haskell-language-server/pull/3558 for this
+--         -- discussion.
+--         generateLensFromGlobal sigs mp = do
+--           [ CodeLens newRange Nothing (Just $ toJSON TypeLensesResolve)
+--             | sig <- sigs
+--             , Just range <- [srcSpanToRange (gbSrcSpan sig)]
+--             , Just newRange <- [toCurrentRange mp range]]
+--     if mode == Always || mode == Exported
+--       then do
+--         -- In this mode we get the global bindings from the
+--         -- GlobalBindingTypeSigs rule.
+--         (GlobalBindingTypeSigsResult gblSigs, gblSigsMp) <-
+--           runActionE "codeLens.GetGlobalBindingTypeSigs" ideState
+--           $ useWithStaleE GetGlobalBindingTypeSigs nfp
+--         -- Depending on whether we only want exported or not we filter our list
+--         -- of signatures to get what we want
+--         let relevantGlobalSigs =
+--               if mode == Exported
+--                 then filter gbExported gblSigs
+--                 else gblSigs
+--         pure $ InL $ generateLensFromGlobal relevantGlobalSigs gblSigsMp
+--       else do
+--         -- For this mode we exclusively use diagnostics to create the lenses.
+--         -- However we will still use the GlobalBindingTypeSigs to resolve them.
+--         diags <- liftIO $ atomically $ getDiagnostics ideState
+--         hDiags <- liftIO $ atomically $ getHiddenDiagnostics ideState
+--         let allDiags = diags <> hDiags
+--         pure $ InL $ generateLensFromGlobalDiags allDiags
 
 codeLensResolveProvider :: ResolveFunction IdeState TypeLensesResolve Method_CodeLensResolve
 codeLensResolveProvider ideState pId lens@CodeLens{_range} uri TypeLensesResolve = do
@@ -311,14 +307,14 @@ instance NFData GlobalBindingTypeSigsResult where
 
 type instance RuleResult GetGlobalBindingTypeSigs = GlobalBindingTypeSigsResult
 
-rules :: Recorder (WithPriority Log) -> Rules ()
-rules recorder = do
-  define (cmapWithPrio LogShake recorder) $ \GetGlobalBindingTypeSigs nfp -> do
-    tmr <- use TypeCheck nfp
-    -- we need session here for tidying types
-    hsc <- use GhcSession nfp
-    result <- liftIO $ gblBindingType (hscEnv <$> hsc) (tmrTypechecked <$> tmr)
-    pure ([], result)
+-- rules :: Recorder (WithPriority Log) -> Rules ()
+-- rules recorder = do
+--   define (cmapWithPrio LogShake recorder) $ \GetGlobalBindingTypeSigs nfp -> do
+--     --tmr <- use TypeCheck nfp
+--     -- we need session here for tidying types
+--     hsc <- use GhcSession nfp
+--     result <- liftIO $ gblBindingType (hscEnv <$> hsc) (tmrTypechecked <$> tmr)
+--     pure ([], result)
 
 gblBindingType :: Maybe HscEnv -> Maybe TcGblEnv -> IO (Maybe GlobalBindingTypeSigsResult)
 gblBindingType (Just hsc) (Just gblEnv) = do

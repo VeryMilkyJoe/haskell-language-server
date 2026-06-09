@@ -45,18 +45,7 @@ descriptors recorder =
 
 descriptor :: Recorder (WithPriority Hover.Log) -> PluginId -> PluginDescriptor IdeState
 descriptor recorder plId = (defaultPluginDescriptor plId desc)
-  { pluginHandlers = mkPluginHandler SMethod_TextDocumentHover (hover' recorder)
-                  <> mkPluginHandler SMethod_TextDocumentDocumentSymbol moduleOutline
-                  <> mkPluginHandler SMethod_TextDocumentDefinition (\ide _ DefinitionParams{..} ->
-                      Hover.gotoDefinition recorder ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentTypeDefinition (\ide _ TypeDefinitionParams{..} ->
-                      Hover.gotoTypeDefinition recorder ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentImplementation (\ide _ ImplementationParams{..} ->
-                      Hover.gotoImplementation recorder ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentDocumentHighlight (\ide _ DocumentHighlightParams{..} ->
-                      Hover.documentHighlight recorder ide TextDocumentPositionParams{..})
-                  <> mkPluginHandler SMethod_TextDocumentReferences (Hover.references recorder)
-                  <> mkPluginHandler SMethod_WorkspaceSymbol (Hover.wsSymbols recorder),
+  {
 
     pluginConfigDescriptor = defaultConfigDescriptor
   }
@@ -65,6 +54,6 @@ descriptor recorder plId = (defaultPluginDescriptor plId desc)
 
 -- ---------------------------------------------------------------------
 
-hover' :: Recorder (WithPriority Hover.Log) -> PluginMethodHandler IdeState Method_TextDocumentHover
-hover' recorder ideState _ HoverParams{..} =
-    Hover.hover recorder ideState TextDocumentPositionParams{..}
+-- hover' :: Recorder (WithPriority Hover.Log) -> PluginMethodHandler IdeState Method_TextDocumentHover
+-- hover' recorder ideState _ HoverParams{..} =
+--     Hover.hover recorder ideState TextDocumentPositionParams{..}

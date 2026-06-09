@@ -13,7 +13,6 @@ module Development.IDE.Types.Options
   , IdePkgLocationOptions(..)
   , defaultIdeOptions
   , IdeResult
-  , IdeGhcSession(..)
   , OptHaddockParse(..)
   , ProgressReportingStyle(..)
   , LinkTargets(..)
@@ -34,16 +33,18 @@ import qualified Language.LSP.Protocol.Lens        as L
 import qualified Language.LSP.Protocol.Types       as LSP
 
 data IdeOptions = IdeOptions
-  { optPreprocessor       :: GHC.ParsedSource -> IdePreprocessedSource
+  {
+
+    -- optPreprocessor       :: GHC.ParsedSource -> IdePreprocessedSource
     -- ^ Preprocessor to run over all parsed source trees, generating a list of warnings
     --   and a list of errors, along with a new parse tree.
-  , optGhcSession         :: Action IdeGhcSession
+  -- , optGhcSession         :: Action IdeGhcSession
     -- ^ Setup a GHC session for a given file, e.g. @Foo.hs@.
     --   For the same 'ComponentOptions' from hie-bios, the resulting function will be applied once per file.
     --   It is desirable that many files get the same 'HscEnvEq', so that more IDE features work.
-  , optPkgLocationOpts    :: IdePkgLocationOptions
+  -- , optPkgLocationOpts    :: IdePkgLocationOptions
     -- ^ How to locate source and @.hie@ files given a module name.
-  , optExtensions         :: [String]
+  optExtensions         :: [String]
     -- ^ File extensions to search for code, defaults to Haskell sources (including @.hs@)
   , optShakeProfiling     :: Maybe FilePath
     -- ^ Set to 'Just' to create a directory of profiling reports.
@@ -133,12 +134,12 @@ clientSupportsProgress :: LSP.ClientCapabilities -> IdeReportProgress
 clientSupportsProgress caps = IdeReportProgress $ Just True ==
     ((\x -> x ^. L.workDoneProgress) =<< LSP._window (caps :: LSP.ClientCapabilities))
 
-defaultIdeOptions :: Action IdeGhcSession -> IdeOptions
-defaultIdeOptions session = IdeOptions
-    {optPreprocessor = IdePreprocessedSource [] []
-    ,optGhcSession = session
-    ,optExtensions = ["hs", "lhs"]
-    ,optPkgLocationOpts = defaultIdePkgLocationOptions
+defaultIdeOptions :: IdeOptions
+defaultIdeOptions = IdeOptions
+    {
+      -- optPreprocessor = IdePreprocessedSource [] []
+    optExtensions = ["hs", "lhs"]
+    -- ,optPkgLocationOpts = defaultIdePkgLocationOptions
     ,optShakeOptions = shakeOptions
     ,optShakeProfiling = Nothing
     ,optReportProgress = IdeReportProgress False
